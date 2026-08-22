@@ -22,7 +22,6 @@ class MetricCard(QFrame):
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(4)
 
-        # Header with icon and title
         hdr = QHBoxLayout()
         icon_lbl = QLabel(icon)
         icon_lbl.setStyleSheet("font-size: 16px;")
@@ -34,12 +33,10 @@ class MetricCard(QFrame):
         hdr.addStretch()
         layout.addLayout(hdr)
 
-        # Main value
         self.val_lbl = QLabel(value)
         self.val_lbl.setStyleSheet("font-size: 20px; font-weight: bold; color: #f0f6fc;")
         layout.addWidget(self.val_lbl)
 
-        # Subtitle
         self.sub_lbl = QLabel(subtitle)
         self.sub_lbl.setStyleSheet("font-size: 11px; color: #8b949e;")
         layout.addWidget(self.sub_lbl)
@@ -98,7 +95,7 @@ class DetailPanel(QWidget):
 
         main_layout.addWidget(self.header_card)
 
-        # 1.1 Error / Diagnostics Notification Banner (Hidden by default)
+        # Error / Diagnostic Banner
         self.error_banner = QFrame()
         self.error_banner.setObjectName("AlertBanner")
         self.error_banner.setVisible(False)
@@ -160,13 +157,13 @@ class DetailPanel(QWidget):
         action_layout.addWidget(self.status_msg_lbl)
         action_layout.addStretch()
 
-        self.export_btn = QPushButton("📄 Export Report (.md)")
+        self.export_btn = QPushButton("📄 Exportar Informes...")
         self.export_btn.setObjectName("AccentButton")
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self._on_export_clicked)
         action_layout.addWidget(self.export_btn)
 
-        self.scan_btn = QPushButton("🔄 Scan Now")
+        self.scan_btn = QPushButton("🔍 Scan Now")
         self.scan_btn.setObjectName("PrimaryButton")
         self.scan_btn.setEnabled(False)
         self.scan_btn.clicked.connect(self._on_scan_clicked)
@@ -175,12 +172,11 @@ class DetailPanel(QWidget):
         main_layout.addLayout(action_layout)
 
     def display_disk(self, disk: DiskInfo):
-        """Displays full telemetry and attributes for the given disk."""
+        """Displays telemetry and attributes for the selected disk."""
         self.current_disk = disk
         self.scan_btn.setEnabled(True)
-        self.export_btn.setEnabled(len(disk.attributes) > 0)
+        self.export_btn.setEnabled(True)
 
-        # Header Info
         host_tag = f"[{disk.server_name}] " if disk.is_remote and disk.server_name else ""
         self.model_lbl.setText(f"{host_tag}{disk.model} ({disk.size_human})")
         
@@ -202,17 +198,18 @@ class DetailPanel(QWidget):
         # Health Badge
         self._update_health_badge(disk)
 
-        # Quick Metrics Cards
-        # Temperature
+        # Telemetry Cards
         if disk.temperature_c is not None:
             temp_c = disk.temperature_c
             temp_color = "#3fb950" if temp_c < 45 else ("#d29922" if temp_c < 55 else "#f85149")
             temp_sub = "Temperatura óptima" if temp_c < 45 else ("Temperatura moderada" if temp_c < 55 else "¡Temperatura elevada!")
             self.temp_card.update_data(f"{temp_c} °C", temp_sub, color=temp_color)
         else:
-            self.temp_card.update_data("N/A", "Sin sensor SMART")
+            if not disk.attributes:
+                self.temp_card.update_data("---", "Presione 'Scan Now'")
+            else:
+                self.temp_card.update_data("N/A", "Sin sensor SMART")
 
-        # Power On Hours
         if disk.power_on_hours is not None:
             hours = disk.power_on_hours
             if hours >= 8760:
@@ -224,18 +221,31 @@ class DetailPanel(QWidget):
             else:
                 self.hours_card.update_data(f"{hours} hrs", "Uso reciente")
         else:
-            self.hours_card.update_data("N/A", "No disponible")
+            if not disk.attributes:
+                self.hours_card.update_data("---", "Presione 'Scan Now'")
+            else:
+                self.hours_card.update_data("N/A", "No disponible")
 
-        # Power Cycles
         if disk.power_cycles is not None:
             self.cycles_card.update_data(f"{disk.power_cycles:,}", "Ciclos de encendido registrados")
         else:
-            self.cycles_card.update_data("N/A", "No disponible")
+            if not disk.attributes:
+                self.cycles_card.update_data("---", "Presione 'Scan Now'")
+            else:
+                self.cycles_card.update_data("N/A", "No disponible")
 
-        # Populate Attributes Table
+        # Table
         self._populate_table(disk)
 
     def _update_health_badge(self, disk: DiskInfo):
+        if not disk.attributes and disk.health_status == HealthStatus.UNKNOWN:
+            self.health_badge.setText("⚪  SIN ESCANEAR")
+            self.health_badge.setStyleSheet(
+                "background-color: #21262d; color: #8b949e; border: 1px solid #30363d; "
+                "font-weight: bold; font-size: 12px; padding: 6px 14px; border-radius: 12px;"
+            )
+            return
+
         status = disk.health_status
         if status == HealthStatus.HEALTHY:
             self.health_badge.setText("🟢  SALUDABLE (PASSED)")
@@ -272,38 +282,31 @@ class DetailPanel(QWidget):
 
         self.table.setRowCount(len(attrs))
         for row, attr in enumerate(attrs):
-            # ID
             id_item = QTableWidgetItem(f"{attr.id:03d}" if attr.id < 1000 else str(attr.id))
             id_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 0, id_item)
 
-            # Name
             name_item = QTableWidgetItem(attr.name)
             if attr.description:
                 name_item.setToolTip(attr.description)
             self.table.setItem(row, 1, name_item)
 
-            # Current
             cur_item = QTableWidgetItem(str(attr.current))
             cur_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 2, cur_item)
 
-            # Worst
             worst_item = QTableWidgetItem(str(attr.worst))
             worst_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 3, worst_item)
 
-            # Thresh
             thr_item = QTableWidgetItem(str(attr.threshold))
             thr_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 4, thr_item)
 
-            # Raw
             raw_item = QTableWidgetItem(str(attr.raw))
             raw_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             self.table.setItem(row, 5, raw_item)
 
-            # Status Badge
             st_item = QTableWidgetItem(f"{attr.status_type.icon} {attr.status}")
             st_item.setTextAlignment(Qt.AlignCenter)
             if attr.status_type == HealthStatus.FAILED:
@@ -323,7 +326,7 @@ class DetailPanel(QWidget):
             self.scan_btn.setText("⏳ Escaneando...")
             self.status_msg_lbl.setText(f"⏳ {message}")
         else:
-            self.scan_btn.setText("🔄 Scan Now")
+            self.scan_btn.setText("🔍 Scan Now")
             self.status_msg_lbl.setText(message)
 
     def _on_scan_clicked(self):

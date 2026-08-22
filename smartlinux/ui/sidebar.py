@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTreeWidget, QTreeWidgetItem, QHeaderView, QMenu, QMessageBox
+    QTreeWidget, QTreeWidgetItem, QHeaderView, QMenu, QMessageBox, QStyle
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon, QColor, QFont
@@ -40,9 +40,9 @@ class SidebarWidget(QWidget):
         header_layout.addWidget(title)
         header_layout.addStretch()
 
-        self.refresh_all_btn = QPushButton("🔄")
+        self.refresh_all_btn = QPushButton("↻ Refrescar")
         self.refresh_all_btn.setToolTip("Refrescar lista de dispositivos")
-        self.refresh_all_btn.setFixedSize(28, 28)
+        self.refresh_all_btn.setStyleSheet("font-size: 11px; padding: 4px 8px; font-weight: bold;")
         self.refresh_all_btn.clicked.connect(self.local_refresh_requested.emit)
         header_layout.addWidget(self.refresh_all_btn)
 
@@ -81,7 +81,6 @@ class SidebarWidget(QWidget):
 
     def set_local_disks(self, disks: List[DiskInfo]):
         """Populates the local disks section."""
-        # Clear previous local disk items
         while self.local_root.childCount() > 0:
             self.local_root.removeChild(self.local_root.child(0))
         
@@ -102,7 +101,6 @@ class SidebarWidget(QWidget):
         """Updates health status and text for a specific scanned disk."""
         if not disk.is_remote:
             self._local_drives[disk.device_path] = disk
-            # Find tree item
             for i in range(self.local_root.childCount()):
                 item = self.local_root.child(i)
                 data = item.data(0, Qt.UserRole)
@@ -113,7 +111,6 @@ class SidebarWidget(QWidget):
             server_id = disk.server_id
             if server_id and server_id in self._remote_drives:
                 self._remote_drives[server_id][disk.device_path] = disk
-                # Find server root
                 for s_idx in range(self.remote_root.childCount()):
                     srv_item = self.remote_root.child(s_idx)
                     s_data = srv_item.data(0, Qt.UserRole)
@@ -126,8 +123,9 @@ class SidebarWidget(QWidget):
                                 break
 
     def _update_disk_item(self, item: QTreeWidgetItem, disk: DiskInfo):
-        icon_str = disk.health_status.icon
-        label = f"{icon_str}  {disk.name} • {disk.model} ({disk.size_human})"
+        icon_str = disk.health_status.icon if disk.attributes else "⚪"
+        status_hint = f" ({disk.size_human})" if disk.size_human and disk.size_human != "Desconocido" else ""
+        label = f"{icon_str}  {disk.name} • {disk.model}{status_hint}"
         item.setText(0, label)
         item.setData(0, Qt.UserRole, {
             "type": "disk",
@@ -138,7 +136,6 @@ class SidebarWidget(QWidget):
 
     def set_servers(self, servers: List[ServerConfig]):
         """Populates the remote servers branch."""
-        # Clear existing server nodes
         while self.remote_root.childCount() > 0:
             self.remote_root.removeChild(self.remote_root.child(0))
         
@@ -156,7 +153,6 @@ class SidebarWidget(QWidget):
                 "server_id": srv.id
             })
             
-            # Placeholder for disks
             loading_item = QTreeWidgetItem(srv_item)
             loading_item.setText(0, "  ⏳ Conectar / Cargar discos...")
             loading_item.setData(0, Qt.UserRole, {"type": "server_action", "server_id": srv.id})
@@ -168,7 +164,6 @@ class SidebarWidget(QWidget):
             srv_item = self.remote_root.child(i)
             data = srv_item.data(0, Qt.UserRole)
             if data and data.get("server_id") == server_id:
-                # Clear children
                 while srv_item.childCount() > 0:
                     srv_item.removeChild(srv_item.child(0))
 
@@ -215,7 +210,6 @@ class SidebarWidget(QWidget):
             elif is_remote and server_id in self._remote_drives and dev_path in self._remote_drives[server_id]:
                 self.disk_selected.emit(self._remote_drives[server_id][dev_path])
         elif item_type == "server_action":
-            # Auto trigger refresh for this server
             server_id = data.get("server_id")
             if server_id:
                 self.server_refresh_requested.emit(server_id)
@@ -237,7 +231,7 @@ class SidebarWidget(QWidget):
             if not srv:
                 return
 
-            act_refresh = menu.addAction("🔄 Escanear Discos del Servidor")
+            act_refresh = menu.addAction("↻ Recargar Discos del Servidor")
             act_remove = menu.addAction("🗑️ Eliminar Servidor")
 
             action = menu.exec(self.tree.viewport().mapToGlobal(pos))
@@ -254,7 +248,7 @@ class SidebarWidget(QWidget):
                     self.server_remove_requested.emit(server_id)
 
         elif item_type == "disk":
-            act_scan = menu.addAction("🔍 Escanear Ahora")
+            act_scan = menu.addAction("🔍 Escanear Ahora (Scan Now)")
             action = menu.exec(self.tree.viewport().mapToGlobal(pos))
             if action == act_scan:
                 self._on_item_selection()

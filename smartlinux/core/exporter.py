@@ -5,7 +5,7 @@ import os
 import re
 from typing import List, Optional, Tuple
 from PySide6.QtGui import QTextDocument, QPageSize, QPageLayout, QPdfWriter
-from PySide6.QtCore import QMarginsF
+from PySide6.QtCore import QMarginsF, QSizeF
 from .models import DiskInfo, HealthStatus
 
 
@@ -94,30 +94,29 @@ class ReportExporter:
 
     @classmethod
     def generate_html_report(cls, disks: List[DiskInfo]) -> str:
-        """Generates an HTML report suitable for PDF rendering and Word (.doc) export."""
+        """Generates an HTML report formatted cleanly for high-DPI PDF and Word (.doc) rendering."""
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         html_parts = [
             "<!DOCTYPE html><html><head><meta charset='utf-8'>",
             "<style>",
-            "body { font-family: 'Segoe UI', Helvetica, Arial, sans-serif; margin: 30px; color: #1e293b; line-height: 1.5; font-size: 13px; }",
-            "h1 { color: #0f172a; border-bottom: 2px solid #3b82f6; padding-bottom: 8px; font-size: 22px; }",
-            "h2 { color: #1e40af; margin-top: 24px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; font-size: 16px; }",
-            ".meta { background-color: #f8fafc; border-left: 4px solid #3b82f6; padding: 10px 14px; margin-bottom: 20px; font-size: 12px; }",
-            "table { width: 100%; border-collapse: collapse; margin-top: 12px; margin-bottom: 20px; font-size: 12px; }",
-            "th { background-color: #f1f5f9; color: #475569; font-weight: 600; text-align: left; padding: 8px; border: 1px solid #cbd5e1; }",
-            "td { padding: 7px 8px; border: 1px solid #e2e8f0; }",
-            "tr:nth-child(even) { background-color: #f8fafc; }",
-            ".badge-ok { background-color: #dcfce7; color: #166534; padding: 3px 8px; border-radius: 4px; font-weight: bold; }",
-            ".badge-warn { background-color: #fef3c7; color: #92400e; padding: 3px 8px; border-radius: 4px; font-weight: bold; }",
-            ".badge-fail { background-color: #fee2e2; color: #991b1b; padding: 3px 8px; border-radius: 4px; font-weight: bold; }",
-            ".metric-box { display: inline-block; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px; margin-right: 12px; min-width: 150px; }",
-            ".metric-val { font-size: 16px; font-weight: bold; color: #0f172a; }",
-            ".metric-lbl { font-size: 11px; color: #64748b; text-transform: uppercase; }",
-            ".page-break { page-break-after: always; margin-top: 30px; }",
+            "body { font-family: 'Segoe UI', 'Liberation Sans', 'DejaVu Sans', Helvetica, Arial, sans-serif; color: #1e293b; margin: 0px; font-size: 11pt; line-height: 1.4; }",
+            "h1 { color: #0f172a; font-size: 18pt; margin: 0 0 4pt 0; }",
+            "h2 { color: #1d4ed8; font-size: 14pt; margin: 14pt 0 4pt 0; border-bottom: 2px solid #3b82f6; padding-bottom: 3pt; }",
+            ".meta { font-size: 10pt; color: #64748b; margin-bottom: 12pt; }",
+            "table.data { width: 100%; border-collapse: collapse; margin-top: 8pt; font-size: 10pt; }",
+            "table.data th { background-color: #f1f5f9; color: #1e293b; padding: 6pt; border: 1px solid #cbd5e1; font-weight: bold; }",
+            "table.data td { padding: 5pt 6pt; border: 1px solid #cbd5e1; }",
+            "table.metrics { width: 100%; border-collapse: collapse; margin: 8pt 0 12pt 0; }",
+            "table.metrics td { width: 33%; background-color: #f8fafc; border: 1px solid #94a3b8; padding: 8pt; text-align: center; }",
+            ".m-lbl { font-size: 9pt; color: #64748b; text-transform: uppercase; font-weight: bold; }",
+            ".m-val { font-size: 15pt; font-weight: bold; color: #0f172a; margin-top: 3pt; }",
+            ".badge-ok { color: #15803d; font-weight: bold; }",
+            ".badge-warn { color: #b45309; font-weight: bold; }",
+            ".badge-fail { color: #b91c1c; font-weight: bold; }",
             "</style></head><body>",
             f"<h1>📊 Informe Consolidado de Diagnóstico S.M.A.R.T.</h1>",
-            f"<div class='meta'><b>Fecha de Emisión:</b> {now_str} &nbsp;|&nbsp; <b>Total de Discos Diagnosticados:</b> {len(disks)}</div>"
+            f"<div class='meta'><b>Fecha de Emisión:</b> {now_str} &nbsp;|&nbsp; <b>Total de Discos:</b> {len(disks)} &nbsp;|&nbsp; <b>Generado por:</b> SmartLinux</div>"
         ]
 
         for idx, disk in enumerate(disks):
@@ -125,40 +124,39 @@ class ReportExporter:
             status_cls = "badge-ok" if disk.health_status == HealthStatus.HEALTHY else ("badge-warn" if disk.health_status == HealthStatus.WARNING else "badge-fail")
 
             html_parts.append(f"<h2>Disco #{idx+1}: {html.escape(disk.model)} ({disk.size_human})</h2>")
-            html_parts.append(f"<p><b>Ubicación:</b> {host_info} &nbsp;|&nbsp; <b>Ruta:</b> <code>{html.escape(disk.device_path)}</code> &nbsp;|&nbsp; <b>S/N:</b> {html.escape(disk.serial)} &nbsp;|&nbsp; <b>Estado:</b> <span class='{status_cls}'>{disk.health_status.label}</span> ({html.escape(disk.health_summary)})</p>")
+            html_parts.append(f"<p style='font-size: 10pt; margin: 4pt 0 8pt 0;'><b>Ubicación:</b> {host_info} &nbsp;|&nbsp; <b>Ruta:</b> <code>{html.escape(disk.device_path)}</code> &nbsp;|&nbsp; <b>S/N:</b> {html.escape(disk.serial)} &nbsp;|&nbsp; <b>Firmware:</b> {html.escape(disk.firmware)} &nbsp;|&nbsp; <b>Salud:</b> <span class='{status_cls}'>{disk.health_status.label}</span> ({html.escape(disk.health_summary)})</p>")
 
             temp_val = disk.formatted_temperature
             hours_val = disk.formatted_power_on
             cycles_val = f"{disk.power_cycles:,}" if disk.power_cycles is not None else "N/A"
 
-            html_parts.append("<div>")
-            html_parts.append(f"<div class='metric-box'><div class='metric-lbl'>Temperatura</div><div class='metric-val'>{temp_val}</div></div>")
-            html_parts.append(f"<div class='metric-box'><div class='metric-lbl'>Horas Encendido</div><div class='metric-val'>{hours_val}</div></div>")
-            html_parts.append(f"<div class='metric-box'><div class='metric-lbl'>Ciclos de Energía</div><div class='metric-val'>{cycles_val}</div></div>")
-            html_parts.append("</div>")
+            html_parts.append("<table class='metrics'><tr>")
+            html_parts.append(f"<td><div class='m-lbl'>🌡️ Temperatura</div><div class='m-val'>{temp_val}</div></td>")
+            html_parts.append(f"<td><div class='m-lbl'>⏱️ Horas Encendido</div><div class='m-val'>{hours_val}</div></td>")
+            html_parts.append(f"<td><div class='m-lbl'>🔄 Ciclos Energía</div><div class='m-val'>{cycles_val}</div></td>")
+            html_parts.append("</tr></table>")
 
             if disk.attributes:
-                html_parts.append("<table>")
-                html_parts.append("<tr><th>ID</th><th>Atributo</th><th>Actual</th><th>Peor</th><th>Umbral</th><th>Valor Crudo</th><th>Estado</th></tr>")
+                html_parts.append("<table class='data'>")
+                html_parts.append("<tr><th width='8%' align='center'>ID</th><th width='32%' align='left'>Atributo SMART</th><th width='10%' align='center'>Actual</th><th width='10%' align='center'>Peor</th><th width='10%' align='center'>Umbral</th><th width='20%' align='left'>Valor Crudo</th><th width='10%' align='center'>Estado</th></tr>")
                 for attr in disk.attributes:
                     attr_cls = "badge-ok" if attr.status_type == HealthStatus.HEALTHY else ("badge-warn" if attr.status_type == HealthStatus.WARNING else "badge-fail")
                     html_parts.append(
-                        f"<tr><td style='text-align:center;'>{attr.id}</td>"
+                        f"<tr><td align='center'>{attr.id}</td>"
                         f"<td><b>{html.escape(attr.name)}</b></td>"
-                        f"<td style='text-align:center;'>{html.escape(attr.current)}</td>"
-                        f"<td style='text-align:center;'>{html.escape(attr.worst)}</td>"
-                        f"<td style='text-align:center;'>{html.escape(attr.threshold)}</td>"
-                        f"<td><code>{html.escape(attr.raw)}</code></td>"
-                        f"<td style='text-align:center;'><span class='{attr_cls}'>{attr.status}</span></td></tr>"
+                        f"<td align='center'>{html.escape(str(attr.current))}</td>"
+                        f"<td align='center'>{html.escape(str(attr.worst))}</td>"
+                        f"<td align='center'>{html.escape(str(attr.threshold))}</td>"
+                        f"<td><code>{html.escape(str(attr.raw))}</code></td>"
+                        f"<td align='center' class='{attr_cls}'>{attr.status}</td></tr>"
                     )
                 html_parts.append("</table>")
             else:
-                html_parts.append("<p><i>No se registraron atributos SMART detallados.</i></p>")
+                html_parts.append("<p><i>No se registraron atributos SMART detallados (disco sin escanear).</i></p>")
 
             if idx < len(disks) - 1:
-                html_parts.append("<hr style='border: 0; border-top: 1px dashed #cbd5e1; margin: 30px 0;'>")
+                html_parts.append("<hr style='border: 0; border-top: 1px dashed #cbd5e1; margin: 20pt 0;'>")
 
-        html_parts.append("<br><p style='font-size: 11px; color: #94a3b8; text-align: center;'>Generado automáticamente por SmartLinux</p>")
         html_parts.append("</body></html>")
         return "".join(html_parts)
 
@@ -273,11 +271,15 @@ class ReportExporter:
                     with open(full_path, "w", encoding="utf-8") as f:
                         f.write(combined_md)
                 elif file_format == "pdf":
-                    doc = QTextDocument()
-                    doc.setHtml(cls.generate_html_report(disks))
                     writer = QPdfWriter(full_path)
-                    writer.setPageSize(QPageSize(QPageSize.A4))
-                    writer.setPageMargins(QMarginsF(15, 15, 15, 15), QPageLayout.Millimeter)
+                    writer.setResolution(96)
+                    layout = QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Portrait, QMarginsF(12, 12, 12, 12), QPageLayout.Millimeter)
+                    writer.setPageLayout(layout)
+
+                    doc = QTextDocument()
+                    paint_rect = writer.pageLayout().paintRectPixels(writer.resolution())
+                    doc.setPageSize(QSizeF(paint_rect.width(), paint_rect.height()))
+                    doc.setHtml(cls.generate_html_report(disks))
                     doc.print_(writer)
                 elif file_format == "doc":
                     html_content = cls.generate_html_report(disks)
@@ -302,11 +304,15 @@ class ReportExporter:
                         with open(full_path, "w", encoding="utf-8") as f:
                             f.write(cls.generate_markdown(d))
                     elif file_format == "pdf":
-                        doc = QTextDocument()
-                        doc.setHtml(cls.generate_html_report([d]))
                         writer = QPdfWriter(full_path)
-                        writer.setPageSize(QPageSize(QPageSize.A4))
-                        writer.setPageMargins(QMarginsF(15, 15, 15, 15), QPageLayout.Millimeter)
+                        writer.setResolution(96)
+                        layout = QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Portrait, QMarginsF(12, 12, 12, 12), QPageLayout.Millimeter)
+                        writer.setPageLayout(layout)
+
+                        doc = QTextDocument()
+                        paint_rect = writer.pageLayout().paintRectPixels(writer.resolution())
+                        doc.setPageSize(QSizeF(paint_rect.width(), paint_rect.height()))
+                        doc.setHtml(cls.generate_html_report([d]))
                         doc.print_(writer)
                     elif file_format == "doc":
                         with open(full_path, "w", encoding="utf-8") as f:

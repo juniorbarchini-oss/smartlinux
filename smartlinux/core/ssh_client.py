@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 from typing import List, Tuple, Optional, Dict, Any
 import paramiko
 from .models import ServerConfig, DiskInfo, HealthStatus
@@ -14,7 +15,7 @@ class RemoteSSHClient:
         self._client: Optional[paramiko.SSHClient] = None
 
     def connect(self, timeout: int = 8) -> Tuple[bool, str]:
-        """Establishes an SSH connection using key or password."""
+        """Establishes an SSH connection using password or key."""
         self.disconnect()
         self._client = paramiko.SSHClient()
         self._client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -29,10 +30,13 @@ class RemoteSSHClient:
                 "auth_timeout": timeout
             }
 
-            if self.config.auth_type == "key":
+            if self.config.auth_type == "password" and self.config.password:
+                connect_kwargs["password"] = self.config.password
+                connect_kwargs["look_for_keys"] = False
+                connect_kwargs["allow_agent"] = False
+            elif self.config.auth_type == "key":
                 key_path = os.path.expanduser(self.config.key_path or "~/.ssh/id_rsa")
                 if not os.path.exists(key_path):
-                    # Check for ed25519 fallback
                     alt_ed = os.path.expanduser("~/.ssh/id_ed25519")
                     if os.path.exists(alt_ed):
                         key_path = alt_ed
@@ -40,7 +44,6 @@ class RemoteSSHClient:
                 if os.path.exists(key_path):
                     connect_kwargs["key_filename"] = key_path
                 else:
-                    # Let paramiko search default agent/keys
                     connect_kwargs["look_for_keys"] = True
             elif self.config.password:
                 connect_kwargs["password"] = self.config.password
@@ -50,7 +53,7 @@ class RemoteSSHClient:
             return True, "Conexión exitosa"
         except paramiko.AuthenticationException:
             self.disconnect()
-            return False, "Error de autenticación SSH: Credenciales o clave inválida."
+            return False, "Error de autenticación SSH: Usuario o contraseña/clave incorrecta."
         except Exception as e:
             self.disconnect()
             return False, f"Fallo al conectar con {self.config.host}:{self.config.port}: {str(e)}"
@@ -69,18 +72,33 @@ class RemoteSSHClient:
             return self._client.get_transport().is_active()
         return False
 
-    def _exec_command(self, cmd: str, timeout: int = 10) -> Tuple[int, str, str]:
-        """Executes a command over SSH and returns (return_code, stdout, stderr)."""
+    def _exec_command(self, cmd: str, timeout: int = 12) -> Tuple[int, str, str]:
+        """Executes a command over SSH, handling sudo if user is non-root."""
         if not self.is_connected():
             ok, msg = self.connect()
             if not ok:
                 return -1, "", msg
 
         try:
+            # First try direct execution
             stdin, stdout, stderr = self._client.exec_command(cmd, timeout=timeout)
             exit_status = stdout.channel.recv_exit_status()
             out_str = stdout.read().decode("utf-8", errors="replace")
             err_str = stderr.read().decode("utf-8", errors="replace")
+
+            # If failed due to permissions and we have a password and non-root, try sudo -S
+            if exit_status != 0 and self.config.username != "root" and self.config.password:
+                if "permission denied" in err_str.lower() or "operation not permitted" in err_str.lower() or not out_str.strip():
+                    sudo_cmd = f"sudo -S -p '' {cmd}"
+                    s_stdin, s_stdout, s_stderr = self._client.exec_command(sudo_cmd, timeout=timeout)
+                    s_stdin.write(self.config.password + "\n")
+                    s_stdin.flush()
+                    s_exit = s_stdout.channel.recv_exit_status()
+                    s_out = s_stdout.read().decode("utf-8", errors="replace")
+                    s_err = s_stderr.read().decode("utf-8", errors="replace")
+                    if s_exit == 0 or s_out.strip():
+                        return s_exit, s_out, s_err
+
             return exit_status, out_str, err_str
         except Exception as e:
             return -1, "", str(e)
@@ -119,8 +137,8 @@ class RemoteSSHClient:
                         server_name=self.config.name
                     )
                     drives.append(disk)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Error parsing remote lsblk: {e}")
 
         # 2. If lsblk returned nothing, fallback to smartctl --scan -j
         if not drives:
@@ -142,8 +160,8 @@ class RemoteSSHClient:
                             server_name=self.config.name
                         )
                         drives.append(disk)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"Error parsing remote smartctl scan: {e}")
 
         return drives
 

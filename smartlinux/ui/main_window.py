@@ -1,11 +1,11 @@
 import os
 import subprocess
-from typing import List, Optional
+from typing import List, Optional, Set
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QLabel, QPushButton, QMessageBox, QFileDialog, QStatusBar
 )
-from PySide6.QtCore import Qt, QThreadPool, QRunnable, Signal, QObject
+from PySide6.QtCore import Qt, QThread, Signal
 
 from ..core.models import DiskInfo, ServerConfig, HealthStatus
 from ..core.detector import LocalDiskDetector
@@ -18,30 +18,23 @@ from .detail_panel import DetailPanel
 from .server_dialog import ServerDialog
 
 
-class WorkerSignals(QObject):
-    finished = Signal()
-    error = Signal(str)
-    result = Signal(object)
-
-
-class GenericWorker(QRunnable):
-    """Executes a callable in a background thread to prevent UI freezing."""
+class TaskWorker(QThread):
+    """Executes a background function safely without freezing Qt UI."""
+    result_ready = Signal(object)
+    error_occurred = Signal(str)
 
     def __init__(self, fn, *args, **kwargs):
         super().__init__()
         self.fn = fn
         self.args = args
         self.kwargs = kwargs
-        self.signals = WorkerSignals()
 
     def run(self):
         try:
             res = self.fn(*self.args, **self.kwargs)
-            self.signals.result.emit(res)
+            self.result_ready.emit(res)
         except Exception as e:
-            self.signals.error.emit(str(e))
-        finally:
-            self.signals.finished.emit()
+            self.error_occurred.emit(str(e))
 
 
 class MainWindow(QMainWindow):
@@ -53,7 +46,8 @@ class MainWindow(QMainWindow):
         self.resize(1100, 720)
         self.setMinimumSize(850, 550)
 
-        self.thread_pool = QThreadPool.globalInstance()
+        # Worker management to prevent GC segfaults
+        self._active_workers: Set[QThread] = set()
         self._active_servers: List[ServerConfig] = []
         self._ssh_clients: dict = {}
 
@@ -69,7 +63,7 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(6)
 
-        # 1. Alert Banner for Permissions / Missing Tools (Hidden by default)
+        # 1. Alert Banner for Permissions / Missing Tools
         self.banner_widget = QWidget()
         self.banner_widget.setObjectName("WarningBanner")
         self.banner_widget.setVisible(False)
@@ -122,6 +116,24 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Listo. Modo on-demand activo (sin consumo en segundo plano).")
 
+    def _start_worker(self, fn, on_result=None, on_error=None, *args, **kwargs) -> TaskWorker:
+        """Starts a background worker thread with robust memory lifecycle management."""
+        worker = TaskWorker(fn, *args, **kwargs)
+        self._active_workers.add(worker)
+
+        if on_result:
+            worker.result_ready.connect(on_result)
+        if on_error:
+            worker.error_occurred.connect(on_error)
+
+        def _cleanup():
+            self._active_workers.discard(worker)
+            worker.deleteLater()
+
+        worker.finished.connect(_cleanup)
+        worker.start()
+        return worker
+
     def _show_banner(self, message: str, is_error: bool = False):
         self.banner_text.setText(message)
         if is_error:
@@ -148,16 +160,16 @@ class MainWindow(QMainWindow):
 
     def _scan_local_drives(self):
         self.status_bar.showMessage("Buscando discos físicos locales...")
-        worker = GenericWorker(self._do_discover_and_read_local_drives)
-        worker.signals.result.connect(self._on_local_drives_ready)
-        worker.signals.error.connect(lambda err: self.status_bar.showMessage(f"Error al escanear discos locales: {err}"))
-        self.thread_pool.start(worker)
+        self._start_worker(
+            self._do_discover_and_read_local_drives,
+            on_result=self._on_local_drives_ready,
+            on_error=lambda err: self.status_bar.showMessage(f"Error al escanear discos locales: {err}")
+        )
 
     def _do_discover_and_read_local_drives(self) -> List[DiskInfo]:
         drives = LocalDiskDetector.discover_drives()
         result_drives = []
         for d in drives:
-            # Read full SMART metrics
             full_disk = LocalDiskDetector.read_drive_smart(d.device_path)
             result_drives.append(full_disk)
         return result_drives
@@ -165,7 +177,6 @@ class MainWindow(QMainWindow):
     def _on_local_drives_ready(self, drives: List[DiskInfo]):
         self.sidebar.set_local_disks(drives)
         self.status_bar.showMessage(f"Detección completada: {len(drives)} disco(s) local(es) encontrado(s).")
-        # If detail panel is empty and we have drives, select the first drive
         if drives and not self.detail_panel.current_disk:
             self.detail_panel.display_disk(drives[0])
 
@@ -194,10 +205,12 @@ class MainWindow(QMainWindow):
             return
 
         self.status_bar.showMessage(f"Conectando a {srv.name} ({srv.host})...")
-        worker = GenericWorker(self._do_scan_remote_server, srv)
-        worker.signals.result.connect(lambda res: self._on_remote_server_scanned(server_id, res))
-        worker.signals.error.connect(lambda err: self.sidebar.set_server_drives(server_id, [], error=err))
-        self.thread_pool.start(worker)
+        self._start_worker(
+            self._do_scan_remote_server,
+            on_result=lambda res: self._on_remote_server_scanned(server_id, res),
+            on_error=lambda err: self._on_remote_server_error(server_id, err),
+            srv=srv
+        )
 
     def _do_scan_remote_server(self, srv: ServerConfig):
         client = RemoteSSHClient(srv)
@@ -218,11 +231,14 @@ class MainWindow(QMainWindow):
         self.sidebar.set_server_drives(server_id, drives)
         self.status_bar.showMessage(f"Servidor escaneado: {len(drives)} disco(s) detectado(s).")
 
+    def _on_remote_server_error(self, server_id: str, error_msg: str):
+        self.sidebar.set_server_drives(server_id, [], error=error_msg)
+        self.status_bar.showMessage(f"Error al conectar con servidor: {error_msg}")
+
     # ---------------- SINGLE DISK SCAN ----------------
 
     def _on_disk_selected_in_sidebar(self, disk: DiskInfo):
         self.detail_panel.display_disk(disk)
-        # If it was never scanned, scan it now
         if disk.health_status == HealthStatus.UNKNOWN and not disk.attributes:
             self._scan_single_disk(disk)
 
@@ -230,10 +246,12 @@ class MainWindow(QMainWindow):
         self.detail_panel.set_loading(True, f"Escaneando telemetría de {disk.name}...")
         self.status_bar.showMessage(f"Leyendo telemetría S.M.A.R.T. de {disk.device_path}...")
 
-        worker = GenericWorker(self._do_read_single_disk, disk)
-        worker.signals.result.connect(self._on_single_disk_scanned)
-        worker.signals.error.connect(self._on_single_disk_error)
-        self.thread_pool.start(worker)
+        self._start_worker(
+            self._do_read_single_disk,
+            on_result=self._on_single_disk_scanned,
+            on_error=self._on_single_disk_error,
+            disk=disk
+        )
 
     def _do_read_single_disk(self, disk: DiskInfo) -> DiskInfo:
         if not disk.is_remote:
@@ -288,3 +306,12 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Informe guardado en: {out_path}")
         else:
             QMessageBox.critical(self, "Error al Exportar", f"No se pudo generar el informe:\n{out_path}")
+
+    def closeEvent(self, event):
+        for worker in list(self._active_workers):
+            try:
+                worker.quit()
+                worker.wait(500)
+            except Exception:
+                pass
+        super().closeEvent(event)

@@ -1,9 +1,11 @@
 [Desktop Entry]
-Version=1.0
-Type=Application
 Name=SmartLinux
-Comment=Diagnóstico S.M.A.R.T. On-Demand de Discos Duros
-Exec=/home/hbarchini/Documents/desarrollo/smartlinux/smartlinux.sh
+GenericName=Disk Diagnostic Tool
+Comment=S.M.A.R.T. Disk Health Diagnostics & Monitoring
+Exec=sh -c "cd $(dirname %k) && ./smartlinux.sh"
+Icon=smartlinux
 Terminal=false
-Categories=System;HardwareSettings;
-Keywords=smart;disk;hdd;ssd;nvme;storage;diagnostic;
+Type=Application
+Categories=System;HardwareSettings;Utility;
+Keywords=smart;disk;ssd;hdd;nvme;health;telemetry;diagnostic;storage;
+StartupWMClass=smartlinux

@@ -18,6 +18,7 @@ from .sidebar import SidebarWidget
 from .detail_panel import DetailPanel
 from .server_dialog import ServerDialog
 from .export_dialog import ExportDialog
+from .setup_dialog import SetupDependenciesDialog
 
 
 class TaskWorker(QThread):
@@ -53,6 +54,7 @@ class MainWindow(QMainWindow):
         self._active_servers: List[ServerConfig] = []
         self._ssh_clients: Dict[str, RemoteSSHClient] = {}
         self._all_known_disks: Dict[str, DiskInfo] = {}
+        self._last_preflight_issue: str = ""
 
         # Hotplug auto-detection watcher
         self._hotplug_watcher: Optional[DeviceHotplugWatcher] = None
@@ -89,6 +91,11 @@ class MainWindow(QMainWindow):
         self.banner_text.setWordWrap(True)
         self.banner_text.setStyleSheet("font-size: 13px; color: #f0883e; font-weight: 500;")
         banner_layout.addWidget(self.banner_text, 1)
+
+        self.banner_fix_btn = QPushButton("⚡ Auto-Configure")
+        self.banner_fix_btn.setStyleSheet("background-color: #238636; color: white; font-weight: bold; padding: 4px 10px; font-size: 12px;")
+        self.banner_fix_btn.clicked.connect(self._on_auto_fix_clicked)
+        banner_layout.addWidget(self.banner_fix_btn)
 
         self.banner_dismiss_btn = QPushButton("✕")
         self.banner_dismiss_btn.setFixedSize(26, 26)
@@ -138,7 +145,6 @@ class MainWindow(QMainWindow):
             print(f"Could not start hotplug watcher: {e}")
 
     def _on_hotplug_event(self):
-        # Debounce hotplug event
         self._hotplug_timer.start()
 
     def _start_worker(self, fn, on_result=None, on_error=None, *args, **kwargs) -> TaskWorker:
@@ -173,7 +179,16 @@ class MainWindow(QMainWindow):
     def _check_smartctl_preflight(self):
         ok, msg = LocalDiskDetector.check_smartctl_available()
         if not ok:
+            self._last_preflight_issue = msg
             self._show_banner(msg, is_error=True)
+        else:
+            self.banner_widget.setVisible(False)
+
+    def _on_auto_fix_clicked(self):
+        dlg = SetupDependenciesDialog(self._last_preflight_issue or "Configure smartctl permissions.", self)
+        if dlg.exec():
+            self._check_smartctl_preflight()
+            self._discover_local_drives()
 
     def _load_saved_servers(self):
         self._active_servers = ConfigManager.load_servers()
@@ -190,12 +205,10 @@ class MainWindow(QMainWindow):
         )
 
     def _on_local_drives_discovered(self, drives: List[DiskInfo]):
-        # Keep existing scanned telemetry if the drive is already in memory
         updated_drives = []
         for d in drives:
             key = f"local_{d.device_path}"
             if key in self._all_known_disks:
-                # Merge existing telemetry
                 cached = self._all_known_disks[key]
                 if cached.attributes:
                     d.attributes = cached.attributes

@@ -1,6 +1,5 @@
 import json
 import os
-import re
 from typing import List, Tuple, Optional, Dict, Any
 import paramiko
 from .models import ServerConfig, DiskInfo, HealthStatus
@@ -25,6 +24,18 @@ def extract_json_object(text: str) -> Optional[Dict[str, Any]]:
         except Exception:
             pass
     return None
+
+
+def is_permission_denied_json(data: Optional[Dict[str, Any]]) -> bool:
+    """Checks if the JSON output is merely an error message stating Permission denied."""
+    if not data:
+        return False
+    messages = data.get("smartctl", {}).get("messages", [])
+    for msg in messages:
+        str_msg = msg.get("string", "").lower()
+        if "permission denied" in str_msg or "operation not permitted" in str_msg or "must be root" in str_msg:
+            return True
+    return False
 
 
 class RemoteSSHClient:
@@ -92,38 +103,56 @@ class RemoteSSHClient:
             return self._client.get_transport().is_active()
         return False
 
-    def _exec_command(self, cmd: str, timeout: int = 15) -> Tuple[int, str, str]:
-        """Executes a command over SSH with full PATH and transparent sudo support."""
+    def _exec_command(self, cmd: str, timeout: int = 15, force_sudo: bool = False) -> Tuple[int, str, str]:
+        """Executes a command over SSH with full PATH and sudo support."""
         if not self.is_connected():
             ok, msg = self.connect()
             if not ok:
                 return -1, "", msg
 
         path_env = "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH; "
-        full_cmd = path_env + cmd
 
-        # 1. Direct execution attempt
+        # If user is not root and password exists and force_sudo or non-root user
+        if (self.config.username != "root" and self.config.password) and (force_sudo or "smartctl" in cmd):
+            sudo_cmd = path_env + f"sudo -S -p '' {cmd}"
+            try:
+                stdin, stdout, stderr = self._client.exec_command(sudo_cmd, timeout=timeout)
+                stdin.write(self.config.password + "\n")
+                stdin.flush()
+                exit_status = stdout.channel.recv_exit_status()
+                out_str = stdout.read().decode("utf-8", errors="replace")
+                err_str = stderr.read().decode("utf-8", errors="replace")
+                
+                json_data = extract_json_object(out_str)
+                if json_data and not is_permission_denied_json(json_data):
+                    return exit_status, out_str, err_str
+                if exit_status == 0:
+                    return exit_status, out_str, err_str
+            except Exception as e:
+                pass
+
+        # Direct execution fallback
         try:
+            full_cmd = path_env + cmd
             stdin, stdout, stderr = self._client.exec_command(full_cmd, timeout=timeout)
             exit_status = stdout.channel.recv_exit_status()
             out_str = stdout.read().decode("utf-8", errors="replace")
             err_str = stderr.read().decode("utf-8", errors="replace")
 
-            # Check if output contains valid json despite return code
-            if extract_json_object(out_str) is not None:
+            json_data = extract_json_object(out_str)
+            if json_data and not is_permission_denied_json(json_data):
                 return exit_status, out_str, err_str
 
-            # If user is not root and failed or got permission error, try sudo -S
-            if self.config.username != "root" and self.config.password:
-                if exit_status != 0 or "permission denied" in err_str.lower() or not out_str.strip():
-                    sudo_cmd = path_env + f"sudo -S -p '' {cmd}"
-                    s_in, s_out, s_err = self._client.exec_command(sudo_cmd, timeout=timeout)
-                    s_in.write(self.config.password + "\n")
-                    s_in.flush()
-                    s_exit = s_out.channel.recv_exit_status()
-                    s_out_str = s_out.read().decode("utf-8", errors="replace")
-                    s_err_str = s_err.read().decode("utf-8", errors="replace")
-                    return s_exit, s_out_str, s_err_str
+            # If failed due to permission in stdout json or stderr, retry with sudo
+            if (is_permission_denied_json(json_data) or "permission denied" in err_str.lower()) and self.config.password:
+                sudo_cmd = path_env + f"sudo -S -p '' {cmd}"
+                s_in, s_out, s_err = self._client.exec_command(sudo_cmd, timeout=timeout)
+                s_in.write(self.config.password + "\n")
+                s_in.flush()
+                s_exit = s_out.channel.recv_exit_status()
+                s_out_str = s_out.read().decode("utf-8", errors="replace")
+                s_err_str = s_err.read().decode("utf-8", errors="replace")
+                return s_exit, s_out_str, s_err_str
 
             return exit_status, out_str, err_str
         except Exception as e:
@@ -166,7 +195,7 @@ class RemoteSSHClient:
 
         # 2. Fallback: smartctl --scan -j
         if not drives:
-            code, out, err = self._exec_command("smartctl --scan -j")
+            code, out, err = self._exec_command("smartctl --scan -j", force_sudo=True)
             json_scan = extract_json_object(out)
             if json_scan and "devices" in json_scan:
                 for dev in json_scan.get("devices", []):
@@ -184,33 +213,15 @@ class RemoteSSHClient:
                     )
                     drives.append(disk)
 
-        # 3. Fallback: inspect /sys/block/
-        if not drives:
-            code, out, err = self._exec_command("ls -d /sys/block/sd* /sys/block/nvme* 2>/dev/null")
-            if out.strip():
-                for line in out.strip().splitlines():
-                    name = line.strip().split("/")[-1]
-                    if not name or "loop" in name or "ram" in name:
-                        continue
-                    disk = DiskInfo(
-                        device_path=f"/dev/{name}",
-                        name=name,
-                        model="Disco Físico Remoto",
-                        is_remote=True,
-                        server_id=self.config.id,
-                        server_name=self.config.name
-                    )
-                    drives.append(disk)
-
         return drives
 
     def read_remote_drive_smart(self, device_path: str) -> DiskInfo:
         """Reads full SMART data for a specific remote drive."""
         cmd = f"smartctl -j -a {device_path}"
-        code, out, err = self._exec_command(cmd)
+        code, out, err = self._exec_command(cmd, force_sudo=True)
 
         json_data = extract_json_object(out)
-        if json_data:
+        if json_data and not is_permission_denied_json(json_data):
             try:
                 disk = SmartParser.parse_smart_json(json_data, device_path)
                 disk.is_remote = True
@@ -220,14 +231,16 @@ class RemoteSSHClient:
             except Exception as e:
                 print(f"Error parsing SMART JSON: {e}")
 
-        # Failed reading
+        # If failed
         error_detail = err.strip()
-        if "not found" in error_detail.lower():
-            error_detail = "smartctl no está instalado en el servidor remoto. Instale 'smartmontools'."
-        elif "permission denied" in error_detail.lower() or "operation not permitted" in error_detail.lower():
-            error_detail = "Permiso denegado en el servidor remoto. Configure permisos sudo o SUID para smartctl."
+        if is_permission_denied_json(json_data):
+            error_detail = "Permiso denegado: configure permisos sudo para smartctl."
+        elif "not found" in error_detail.lower():
+            error_detail = "smartctl no está instalado en el servidor remoto."
+        elif "permission denied" in error_detail.lower():
+            error_detail = "Permiso denegado en el host remoto. Requiere sudo."
         elif not error_detail:
-            error_detail = f"Sin respuesta SMART (código {code})"
+            error_detail = f"Sin datos SMART válidos (código {code})"
 
         disk = DiskInfo(
             device_path=device_path,

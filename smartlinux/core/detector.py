@@ -1,5 +1,6 @@
 import json
 import os
+import platform
 import shutil
 import subprocess
 from typing import List, Tuple, Optional
@@ -8,28 +9,45 @@ from .smart_parser import SmartParser
 
 
 class LocalDiskDetector:
-    """Discovers physical local drives and reads their SMART metrics."""
+    """Discovers physical local drives across Linux and macOS and reads their SMART metrics."""
 
-    @staticmethod
-    def check_smartctl_available() -> Tuple[bool, str]:
+    @classmethod
+    def get_smartctl_bin(cls) -> str:
+        candidates = [
+            shutil.which("smartctl"),
+            "/opt/homebrew/bin/smartctl",
+            "/opt/homebrew/sbin/smartctl",
+            "/usr/local/sbin/smartctl",
+            "/usr/local/bin/smartctl",
+            "/usr/sbin/smartctl",
+            "/sbin/smartctl"
+        ]
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        return "smartctl"
+
+    @classmethod
+    def check_smartctl_available(cls) -> Tuple[bool, str]:
         """
         Checks if smartctl is installed and executable without permission errors.
         Returns (is_ok, error_or_warning_message).
         """
-        smartctl_path = shutil.which("smartctl")
-        if not smartctl_path:
-            # Check standard sbin locations
-            for candidate in ["/usr/sbin/smartctl", "/sbin/smartctl", "/usr/local/sbin/smartctl"]:
-                if os.path.exists(candidate) and os.access(candidate, os.X_OK):
-                    smartctl_path = candidate
-                    break
-        
-        if not smartctl_path:
-            return False, (
-                "El comando 'smartctl' no está instalado en el sistema.\n"
-                "Por favor, instale el paquete 'smartmontools' ejecutando:\n"
-                "sudo apt install smartmontools"
-            )
+        smartctl_path = cls.get_smartctl_bin()
+        if not shutil.which(smartctl_path) and not os.path.exists(smartctl_path):
+            is_mac = (platform.system() == "Darwin")
+            if is_mac:
+                return False, (
+                    "El comando 'smartctl' no está instalado en este sistema.\n"
+                    "En macOS, instálelo con Homebrew ejecutando:\n"
+                    "brew install smartmontools"
+                )
+            else:
+                return False, (
+                    "El comando 'smartctl' no está instalado en el sistema.\n"
+                    "Instale el paquete 'smartmontools' ejecutando:\n"
+                    "sudo apt install smartmontools  (o el gestor de paquetes de su distribución)"
+                )
 
         # Test running smartctl --version
         try:
@@ -39,7 +57,7 @@ class LocalDiskDetector:
         except Exception as e:
             return False, f"Excepción al ejecutar smartctl: {str(e)}"
 
-        # Test running smartctl --scan -j to check permission (SUID or raw disk read)
+        # Test running smartctl --scan -j to check permissions
         try:
             scan_res = subprocess.run([smartctl_path, "--scan", "-j"], capture_output=True, text=True, timeout=5)
             if scan_res.returncode == 0:
@@ -54,77 +72,66 @@ class LocalDiskDetector:
             return False, f"Error al comprobar permisos de smartctl: {str(e)}"
 
     @classmethod
-    def get_smartctl_bin(cls) -> str:
-        path = shutil.which("smartctl")
-        if path:
-            return path
-        for candidate in ["/usr/sbin/smartctl", "/sbin/smartctl", "/usr/local/sbin/smartctl"]:
-            if os.path.exists(candidate):
-                return candidate
-        return "smartctl"
-
-    @classmethod
     def discover_drives(cls) -> List[DiskInfo]:
         """
-        Discovers all real physical disks using lsblk, filtering out loops,
-        virtual disks, and RAM disks.
+        Universally discovers real physical disks on local machine (Linux & macOS).
         """
         drives: List[DiskInfo] = []
         smartctl_bin = cls.get_smartctl_bin()
+        is_darwin = (platform.system() == "Darwin")
 
-        # Step 1: Use lsblk JSON output to discover block devices of type 'disk'
+        # Tier 1: smartctl --scan -j
         try:
-            cmd = ["lsblk", "-J", "-d", "-o", "NAME,PATH,MODEL,SIZE,TRAN,TYPE,ROTA"]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-            if proc.returncode == 0:
+            proc = subprocess.run([smartctl_bin, "--scan", "-j"], capture_output=True, text=True, timeout=5)
+            if proc.returncode == 0 and proc.stdout.strip():
                 data = json.loads(proc.stdout)
-                devices = data.get("blockdevices", [])
-                for dev in devices:
+                for dev in data.get("devices", []):
                     dev_name = dev.get("name", "")
-                    dev_path = dev.get("path", f"/dev/{dev_name}")
-                    dev_type = dev.get("type", "").lower()
-                    
-                    # Filter out non-disk or virtual devices
-                    if dev_type != "disk":
+                    if not dev_name:
                         continue
-                    if any(dev_name.startswith(p) for p in ["loop", "ram", "zram", "dm-", "sr", "cdrom"]):
+                    if any(x in dev_name for x in ["/loop", "/ram", "/zram", "/dm-", "/sr"]):
                         continue
-
-                    # Create initial disk entry
-                    model = dev.get("model") or "Disco Físico"
-                    size_str = dev.get("size") or "Desconocido"
-                    tran = dev.get("tran") or "SATA"
-
                     disk = DiskInfo(
-                        device_path=dev_path,
-                        name=dev_name,
-                        model=model.strip(),
-                        size_human=size_str,
-                        protocol=tran.upper() if tran else "ATA/SATA"
+                        device_path=dev_name,
+                        name=dev_name.split("/")[-1],
+                        model="Disco Físico",
+                        protocol=dev.get("protocol", "SATA").upper()
                     )
                     drives.append(disk)
         except Exception as e:
-            print(f"Error enumerating drives with lsblk: {e}")
+            print(f"Error scanning with smartctl: {e}")
 
-        # Fallback/Complement with smartctl --scan -j if lsblk returned nothing
-        if not drives:
+        # Linux Tier 2: lsblk
+        if not drives and not is_darwin:
             try:
-                proc = subprocess.run([smartctl_bin, "--scan", "-j"], capture_output=True, text=True, timeout=5)
+                cmd = ["lsblk", "-J", "-d", "-o", "NAME,PATH,MODEL,SIZE,TRAN,TYPE,ROTA"]
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
                 if proc.returncode == 0:
                     data = json.loads(proc.stdout)
-                    for dev in data.get("devices", []):
+                    for dev in data.get("blockdevices", []):
                         dev_name = dev.get("name", "")
-                        if not dev_name:
+                        dev_path = dev.get("path", f"/dev/{dev_name}")
+                        dev_type = dev.get("type", "").lower()
+                        
+                        if dev_type != "disk":
                             continue
+                        if any(dev_name.startswith(p) for p in ["loop", "ram", "zram", "dm-", "sr", "cdrom"]):
+                            continue
+
+                        model = dev.get("model") or "Disco Físico"
+                        size_str = dev.get("size") or "Desconocido"
+                        tran = dev.get("tran") or "SATA"
+
                         disk = DiskInfo(
-                            device_path=dev_name,
-                            name=dev_name.split("/")[-1],
-                            model="Disco Detectado",
-                            protocol=dev.get("protocol", "SATA")
+                            device_path=dev_path,
+                            name=dev_name,
+                            model=model.strip(),
+                            size_human=size_str,
+                            protocol=tran.upper() if tran else "ATA/SATA"
                         )
                         drives.append(disk)
             except Exception as e:
-                print(f"Error scanning with smartctl: {e}")
+                print(f"Error enumerating drives with lsblk: {e}")
 
         return drives
 
@@ -136,8 +143,6 @@ class LocalDiskDetector:
             cmd = [smartctl_bin, "-j", "-a", device_path]
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             
-            # smartctl returns bitmask return codes where 0 means all passed,
-            # but stdout contains valid JSON even if exit code is non-zero (e.g. smart errors)
             if proc.stdout:
                 try:
                     data = json.loads(proc.stdout)
@@ -146,7 +151,6 @@ class LocalDiskDetector:
                 except json.JSONDecodeError:
                     pass
 
-            # Error reading
             disk = DiskInfo(
                 device_path=device_path,
                 name=device_path.split("/")[-1],

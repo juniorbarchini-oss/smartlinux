@@ -107,7 +107,7 @@ class ServerConfig:
     host: str
     port: int = 22
     username: str = "root"
-    auth_type: str = "key"  # "key" or "password"
+    auth_type: str = "password"  # "password" or "key"
     key_path: Optional[str] = None
     password: Optional[str] = None
 
@@ -119,8 +119,8 @@ class ServerConfig:
             "port": self.port,
             "username": self.username,
             "auth_type": self.auth_type,
-            "key_path": self.key_path
-            # Note: passwords are not saved to disk for security
+            "key_path": self.key_path,
+            "password": self.password
         }
 
     @classmethod
@@ -131,7 +131,7 @@ class ServerConfig:
             host=data.get("host", ""),
             port=data.get("port", 22),
             username=data.get("username", "root"),
-            auth_type=data.get("auth_type", "key"),
+            auth_type=data.get("auth_type", "password"),
             key_path=data.get("key_path"),
-            password=None
+            password=data.get("password")
         )

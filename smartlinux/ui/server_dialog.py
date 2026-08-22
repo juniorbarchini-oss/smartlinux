@@ -1,9 +1,9 @@
 import os
 from typing import Optional
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QRadioButton, QButtonGroup, QFileDialog,
-    QMessageBox, QSpinBox, QFormLayout
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QPushButton, QComboBox, QFileDialog,
+    QMessageBox, QSpinBox, QFormLayout, QFrame, QStackedWidget
 )
 from PySide6.QtCore import Qt, QThread, Signal
 from ..core.models import ServerConfig
@@ -28,12 +28,12 @@ class TestSSHThread(QThread):
 
 
 class ServerDialog(QDialog):
-    """Dialog to add or edit an SSH Homelab server."""
+    """Dialog to add or edit an SSH Homelab server with Password or Key authentication."""
 
     def __init__(self, parent=None, server_config: Optional[ServerConfig] = None):
         super().__init__(parent)
         self.setWindowTitle("Configurar Servidor Homelab SSH")
-        self.setMinimumWidth(450)
+        self.setMinimumWidth(480)
         self.server_config = server_config
         self.test_thread: Optional[TestSSHThread] = None
 
@@ -43,29 +43,30 @@ class ServerDialog(QDialog):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(14)
 
         # Title / Description
-        header = QLabel("Conectar Servidor Homelab")
-        header.setStyleSheet("font-size: 16px; font-weight: bold; color: #58a6ff;")
+        header = QLabel("🖥️ Conectar Servidor Homelab")
+        header.setStyleSheet("font-size: 17px; font-weight: bold; color: #58a6ff;")
         layout.addWidget(header)
 
         desc = QLabel("Añada un servidor remoto para monitorear sus discos duros por SSH.")
-        desc.setStyleSheet("color: #8b949e; font-size: 12px;")
+        desc.setStyleSheet("color: #8b949e; font-size: 12px; margin-bottom: 4px;")
         layout.addWidget(desc)
 
-        # Form layout
+        # Main Server Form
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignRight)
         form.setSpacing(10)
 
         self.name_input = QLineEdit()
         self.name_input.setPlaceholderText("ej. NodCasa, i7server, Proxmox")
-        form.addRow("Nombre descriptivo:", self.name_input)
+        form.addRow("Nombre del Servidor:", self.name_input)
 
         self.host_input = QLineEdit()
         self.host_input.setPlaceholderText("ej. 192.168.1.50 o homelab.local")
-        form.addRow("Host / Dirección IP:", self.host_input)
+        form.addRow("Dirección IP / Host:", self.host_input)
 
         self.port_input = QSpinBox()
         self.port_input.setRange(1, 65535)
@@ -74,48 +75,71 @@ class ServerDialog(QDialog):
 
         self.user_input = QLineEdit()
         self.user_input.setText("root")
-        self.user_input.setPlaceholderText("ej. root o hbarchini")
-        form.addRow("Usuario:", self.user_input)
+        self.user_input.setPlaceholderText("ej. root o tu usuario")
+        form.addRow("Usuario SSH:", self.user_input)
 
         layout.addLayout(form)
 
-        # Auth Method Group
-        auth_box = QVBoxLayout()
-        auth_label = QLabel("Método de Autenticación:")
-        auth_label.setStyleSheet("font-weight: bold; margin-top: 8px;")
-        auth_box.addWidget(auth_label)
+        # Authentication Method Section
+        auth_frame = QFrame()
+        auth_frame.setStyleSheet("background-color: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px;")
+        auth_layout = QVBoxLayout(auth_frame)
+        auth_layout.setSpacing(10)
 
-        self.auth_group = QButtonGroup(self)
-        self.rb_key = QRadioButton("Clave SSH Privada (Recomendado)")
-        self.rb_pass = QRadioButton("Contraseña")
-        self.rb_key.setChecked(True)
-        self.auth_group.addButton(self.rb_key)
-        self.auth_group.addButton(self.rb_pass)
+        auth_title = QLabel("MÉTODO DE AUTENTICACIÓN")
+        auth_title.setStyleSheet("font-size: 12px; font-weight: bold; color: #58a6ff; letter-spacing: 0.5px;")
+        auth_layout.addWidget(auth_title)
 
-        auth_box.addWidget(self.rb_key)
+        # Dropdown Selector
+        self.auth_combo = QComboBox()
+        self.auth_combo.addItem("🔒 Contraseña de Usuario", "password")
+        self.auth_combo.addItem("🔑 Clave SSH Privada (~/.ssh)", "key")
+        self.auth_combo.currentIndexChanged.connect(self._on_auth_type_changed)
+        auth_layout.addWidget(self.auth_combo)
 
-        # Key file selection row
-        key_row = QHBoxLayout()
+        # Stacked Pages for Password vs Key
+        self.auth_stack = QStackedWidget()
+
+        # Page 0: Password Input
+        pass_page = QWidget()
+        pass_layout = QHBoxLayout(pass_page)
+        pass_layout.setContentsMargins(0, 4, 0, 0)
+        
+        self.pass_input = QLineEdit()
+        self.pass_input.setEchoMode(QLineEdit.Password)
+        self.pass_input.setPlaceholderText("Ingrese la contraseña SSH...")
+        pass_layout.addWidget(self.pass_input)
+
+        self.toggle_pass_btn = QPushButton("👁️")
+        self.toggle_pass_btn.setToolTip("Mostrar/Ocultar contraseña")
+        self.toggle_pass_btn.setFixedSize(36, 36)
+        self.toggle_pass_btn.clicked.connect(self._toggle_pass_visibility)
+        pass_layout.addWidget(self.toggle_pass_btn)
+
+        self.auth_stack.addWidget(pass_page)
+
+        # Page 1: Key File Input
+        key_page = QWidget()
+        key_layout = QHBoxLayout(key_page)
+        key_layout.setContentsMargins(0, 4, 0, 0)
+
         default_key = os.path.expanduser("~/.ssh/id_rsa")
         if not os.path.exists(default_key):
             default_key = os.path.expanduser("~/.ssh/id_ed25519")
+
         self.key_input = QLineEdit()
         self.key_input.setText(default_key)
-        self.key_btn = QPushButton("Explorar...")
-        self.key_btn.clicked.connect(self._browse_key_file)
-        key_row.addWidget(self.key_input)
-        key_row.addWidget(self.key_btn)
-        auth_box.addLayout(key_row)
+        self.key_input.setPlaceholderText("Ruta al archivo de clave privada...")
+        key_layout.addWidget(self.key_input)
 
-        auth_box.addWidget(self.rb_pass)
-        self.pass_input = QLineEdit()
-        self.pass_input.setEchoMode(QLineEdit.Password)
-        self.pass_input.setPlaceholderText("Contraseña del usuario SSH")
-        self.pass_input.setEnabled(False)
-        auth_box.addWidget(self.pass_input)
+        self.key_browse_btn = QPushButton("Explorar...")
+        self.key_browse_btn.clicked.connect(self._browse_key_file)
+        key_layout.addWidget(self.key_browse_btn)
 
-        self.rb_key.toggled.connect(self._toggle_auth_mode)
-        layout.addLayout(auth_box)
+        self.auth_stack.addWidget(key_page)
+
+        auth_layout.addWidget(self.auth_stack)
+        layout.addWidget(auth_frame)
 
         # Status label for connection test
         self.test_status_label = QLabel("")
@@ -123,9 +147,11 @@ class ServerDialog(QDialog):
         self.test_status_label.setStyleSheet("font-size: 12px; padding: 4px;")
         layout.addWidget(self.test_status_label)
 
-        # Buttons
+        # Action Buttons
         btn_layout = QHBoxLayout()
-        self.test_btn = QPushButton("Probar Conexión")
+        btn_layout.setSpacing(10)
+
+        self.test_btn = QPushButton("🔍 Probar Conexión")
         self.test_btn.clicked.connect(self._test_connection)
         btn_layout.addWidget(self.test_btn)
 
@@ -142,11 +168,16 @@ class ServerDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
-    def _toggle_auth_mode(self):
-        is_key = self.rb_key.isChecked()
-        self.key_input.setEnabled(is_key)
-        self.key_btn.setEnabled(is_key)
-        self.pass_input.setEnabled(not is_key)
+    def _on_auth_type_changed(self, index: int):
+        self.auth_stack.setCurrentIndex(index)
+
+    def _toggle_pass_visibility(self):
+        if self.pass_input.echoMode() == QLineEdit.Password:
+            self.pass_input.setEchoMode(QLineEdit.Normal)
+            self.toggle_pass_btn.setText("🔒")
+        else:
+            self.pass_input.setEchoMode(QLineEdit.Password)
+            self.toggle_pass_btn.setText("👁️")
 
     def _browse_key_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -171,9 +202,9 @@ class ServerDialog(QDialog):
         if not name:
             name = host
 
-        auth_type = "key" if self.rb_key.isChecked() else "password"
-        key_path = self.key_input.text().strip() if auth_type == "key" else None
+        auth_type = self.auth_combo.currentData()
         password = self.pass_input.text() if auth_type == "password" else None
+        key_path = self.key_input.text().strip() if auth_type == "key" else None
 
         srv_id = self.server_config.id if self.server_config else ""
         return ServerConfig(
@@ -203,7 +234,7 @@ class ServerDialog(QDialog):
 
     def _on_test_result(self, ok: bool, msg: str):
         self.test_btn.setEnabled(True)
-        self.test_btn.setText("Probar Conexión")
+        self.test_btn.setText("🔍 Probar Conexión")
         if ok:
             self.test_status_label.setStyleSheet("color: #3fb950; font-weight: bold; font-size: 12px;")
             self.test_status_label.setText(f"✓ {msg}")
@@ -216,12 +247,15 @@ class ServerDialog(QDialog):
         self.host_input.setText(cfg.host)
         self.port_input.setValue(cfg.port)
         self.user_input.setText(cfg.username)
-        if cfg.auth_type == "password":
-            self.rb_pass.setChecked(True)
-        else:
-            self.rb_key.setChecked(True)
+        
+        if cfg.auth_type == "key":
+            self.auth_combo.setCurrentIndex(1)
             if cfg.key_path:
                 self.key_input.setText(cfg.key_path)
+        else:
+            self.auth_combo.setCurrentIndex(0)
+            if cfg.password:
+                self.pass_input.setText(cfg.password)
 
     def _save(self):
         cfg = self._get_current_config()

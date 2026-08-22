@@ -16,38 +16,38 @@ class MetricCard(QFrame):
         super().__init__(parent)
         self.setProperty("class", "MetricCard")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.setMinimumHeight(90)
+        self.setMinimumHeight(96)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(4)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(5)
 
         hdr = QHBoxLayout()
         icon_lbl = QLabel(icon)
-        icon_lbl.setStyleSheet("font-size: 16px;")
+        icon_lbl.setStyleSheet("font-size: 18px;")
         hdr.addWidget(icon_lbl)
 
         title_lbl = QLabel(title)
-        title_lbl.setStyleSheet("font-size: 12px; font-weight: 600; color: #8b949e; text-transform: uppercase;")
+        title_lbl.setStyleSheet("font-size: 13px; font-weight: 700; color: #8b949e; text-transform: uppercase;")
         hdr.addWidget(title_lbl)
         hdr.addStretch()
         layout.addLayout(hdr)
 
         self.val_lbl = QLabel(value)
-        self.val_lbl.setStyleSheet("font-size: 20px; font-weight: bold; color: #f0f6fc;")
+        self.val_lbl.setStyleSheet("font-size: 22px; font-weight: bold; color: #f0f6fc;")
         layout.addWidget(self.val_lbl)
 
         self.sub_lbl = QLabel(subtitle)
-        self.sub_lbl.setStyleSheet("font-size: 11px; color: #8b949e;")
+        self.sub_lbl.setStyleSheet("font-size: 12px; color: #8b949e;")
         layout.addWidget(self.sub_lbl)
 
     def update_data(self, value: str, subtitle: str = "", color: Optional[str] = None):
         self.val_lbl.setText(value)
         self.sub_lbl.setText(subtitle)
         if color:
-            self.val_lbl.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {color};")
+            self.val_lbl.setStyleSheet(f"font-size: 22px; font-weight: bold; color: {color};")
         else:
-            self.val_lbl.setStyleSheet("font-size: 20px; font-weight: bold; color: #f0f6fc;")
+            self.val_lbl.setStyleSheet("font-size: 22px; font-weight: bold; color: #f0f6fc;")
 
 
 class DetailPanel(QWidget):
@@ -55,6 +55,7 @@ class DetailPanel(QWidget):
 
     scan_requested = Signal(object)     # Emits current DiskInfo
     export_requested = Signal(object)   # Emits current DiskInfo
+    eject_requested = Signal(str)       # Emits device_path for local USB drive
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -63,34 +64,34 @@ class DetailPanel(QWidget):
 
     def _setup_ui(self):
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setContentsMargins(14, 14, 14, 14)
         main_layout.setSpacing(14)
 
         # 1. Header Card (Model, S/N, Health Status Badge)
         self.header_card = QFrame()
         self.header_card.setProperty("class", "HeaderCard")
         hdr_layout = QVBoxLayout(self.header_card)
-        hdr_layout.setContentsMargins(16, 14, 16, 14)
+        hdr_layout.setContentsMargins(18, 16, 18, 16)
         hdr_layout.setSpacing(8)
 
         # Top row: Title + Health Badge
         top_row = QHBoxLayout()
-        self.model_lbl = QLabel("Seleccione un disco para ver el diagnóstico")
-        self.model_lbl.setStyleSheet("font-size: 20px; font-weight: bold; color: #ffffff;")
+        self.model_lbl = QLabel("Select a storage device to view diagnostics")
+        self.model_lbl.setStyleSheet("font-size: 21px; font-weight: bold; color: #ffffff;")
         top_row.addWidget(self.model_lbl)
         top_row.addStretch()
 
-        self.health_badge = QLabel("SIN SELECCIÓN")
+        self.health_badge = QLabel("NO SELECTION")
         self.health_badge.setStyleSheet(
             "background-color: #30363d; color: #8b949e; font-weight: bold; "
-            "font-size: 12px; padding: 6px 14px; border-radius: 12px;"
+            "font-size: 13px; padding: 6px 14px; border-radius: 12px;"
         )
         top_row.addWidget(self.health_badge)
         hdr_layout.addLayout(top_row)
 
         # Bottom row: Serial, Firmware, Protocol, Path
-        self.info_lbl = QLabel("Detalles del dispositivo aparecerán aquí.")
-        self.info_lbl.setStyleSheet("font-size: 12px; color: #8b949e;")
+        self.info_lbl = QLabel("Device telemetry details will appear here.")
+        self.info_lbl.setStyleSheet("font-size: 13px; color: #8b949e;")
         hdr_layout.addWidget(self.info_lbl)
 
         main_layout.addWidget(self.header_card)
@@ -106,7 +107,7 @@ class DetailPanel(QWidget):
         eb_layout.addWidget(self.error_icon)
         self.error_lbl = QLabel("")
         self.error_lbl.setWordWrap(True)
-        self.error_lbl.setStyleSheet("color: #ff7b72; font-size: 12px; font-weight: 500;")
+        self.error_lbl.setStyleSheet("color: #ff7b72; font-size: 13px; font-weight: 500;")
         eb_layout.addWidget(self.error_lbl, 1)
         main_layout.addWidget(self.error_banner)
 
@@ -114,9 +115,9 @@ class DetailPanel(QWidget):
         metrics_layout = QHBoxLayout()
         metrics_layout.setSpacing(12)
 
-        self.temp_card = MetricCard("Temperatura", "🌡️", "N/A", "Sensor térmico")
-        self.hours_card = MetricCard("Tiempo de Encendido", "⏱️", "N/A", "Horas acumuladas")
-        self.cycles_card = MetricCard("Ciclos de Energía", "🔄", "N/A", "Arranques de energía")
+        self.temp_card = MetricCard("Temperature", "🌡️", "N/A", "Thermal Sensor")
+        self.hours_card = MetricCard("Power-On Time", "⏱️", "N/A", "Accumulated Hours")
+        self.cycles_card = MetricCard("Power Cycles", "🔄", "N/A", "Power-on count")
 
         metrics_layout.addWidget(self.temp_card)
         metrics_layout.addWidget(self.hours_card)
@@ -125,13 +126,13 @@ class DetailPanel(QWidget):
 
         # 3. S.M.A.R.T. Attribute Table Title
         table_hdr = QHBoxLayout()
-        table_title = QLabel("TABLA DE ATRIBUTOS S.M.A.R.T.")
+        table_title = QLabel("S.M.A.R.T. ATTRIBUTES & DIAGNOSTICS")
         table_title.setStyleSheet("font-size: 13px; font-weight: bold; color: #8b949e; letter-spacing: 1px;")
         table_hdr.addWidget(table_title)
         table_hdr.addStretch()
 
-        self.table_count_lbl = QLabel("0 atributos")
-        self.table_count_lbl.setStyleSheet("font-size: 11px; color: #8b949e;")
+        self.table_count_lbl = QLabel("0 attributes")
+        self.table_count_lbl.setStyleSheet("font-size: 12px; color: #8b949e;")
         table_hdr.addWidget(self.table_count_lbl)
         main_layout.addLayout(table_hdr)
 
@@ -139,7 +140,7 @@ class DetailPanel(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels([
-            "ID", "Atributo", "Actual", "Peor", "Umbral", "Valor Crudo (Raw)", "Estado"
+            "ID", "Attribute Name", "Current", "Worst", "Threshold", "Raw Value", "Status"
         ])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.table.horizontalHeader().setStretchLastSection(True)
@@ -150,14 +151,21 @@ class DetailPanel(QWidget):
 
         # 4. Action Bar
         action_layout = QHBoxLayout()
-        action_layout.setSpacing(10)
+        action_layout.setSpacing(12)
+
+        # Eject Button (Visible only for local USB drives)
+        self.eject_btn = QPushButton("⏏️ Eject USB Drive")
+        self.eject_btn.setObjectName("EjectButton")
+        self.eject_btn.setVisible(False)
+        self.eject_btn.clicked.connect(self._on_eject_clicked)
+        action_layout.addWidget(self.eject_btn)
 
         self.status_msg_lbl = QLabel("")
-        self.status_msg_lbl.setStyleSheet("color: #8b949e; font-size: 12px;")
+        self.status_msg_lbl.setStyleSheet("color: #8b949e; font-size: 13px;")
         action_layout.addWidget(self.status_msg_lbl)
         action_layout.addStretch()
 
-        self.export_btn = QPushButton("📄 Exportar Informes...")
+        self.export_btn = QPushButton("📄 Export Reports...")
         self.export_btn.setObjectName("AccentButton")
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self._on_export_clicked)
@@ -172,25 +180,31 @@ class DetailPanel(QWidget):
         main_layout.addLayout(action_layout)
 
     def display_disk(self, disk: DiskInfo):
-        """Displays telemetry and attributes for the selected disk."""
         self.current_disk = disk
         self.scan_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
 
+        # Eject button visibility
+        if disk.is_usb and not disk.is_remote:
+            self.eject_btn.setVisible(True)
+        else:
+            self.eject_btn.setVisible(False)
+
         host_tag = f"[{disk.server_name}] " if disk.is_remote and disk.server_name else ""
-        self.model_lbl.setText(f"{host_tag}{disk.model} ({disk.size_human})")
+        usb_hint = " [USB Drive]" if disk.is_usb else ""
+        self.model_lbl.setText(f"{host_tag}{disk.model} ({disk.size_human}){usb_hint}")
         
         info_text = (
-            f"Ruta: <b>{disk.device_path}</b> &nbsp;|&nbsp; "
+            f"Path: <b>{disk.device_path}</b> &nbsp;|&nbsp; "
             f"S/N: <b>{disk.serial}</b> &nbsp;|&nbsp; "
             f"Firmware: <b>{disk.firmware}</b> &nbsp;|&nbsp; "
-            f"Tipo: <b>{disk.protocol} ({disk.rotation_rate})</b>"
+            f"Type: <b>{disk.protocol} ({disk.rotation_rate})</b>"
         )
         self.info_lbl.setText(info_text)
 
         # Error Banner
         if disk.error_message:
-            self.error_lbl.setText(f"Diagnóstico no disponible: {disk.error_message}")
+            self.error_lbl.setText(f"Diagnostic not available: {disk.error_message}")
             self.error_banner.setVisible(True)
         else:
             self.error_banner.setVisible(False)
@@ -202,80 +216,80 @@ class DetailPanel(QWidget):
         if disk.temperature_c is not None:
             temp_c = disk.temperature_c
             temp_color = "#3fb950" if temp_c < 45 else ("#d29922" if temp_c < 55 else "#f85149")
-            temp_sub = "Temperatura óptima" if temp_c < 45 else ("Temperatura moderada" if temp_c < 55 else "¡Temperatura elevada!")
+            temp_sub = "Optimal temperature" if temp_c < 45 else ("Moderate temperature" if temp_c < 55 else "High temperature warning!")
             self.temp_card.update_data(f"{temp_c} °C", temp_sub, color=temp_color)
         else:
             if not disk.attributes:
-                self.temp_card.update_data("---", "Presione 'Scan Now'")
+                self.temp_card.update_data("---", "Click 'Scan Now'")
             else:
-                self.temp_card.update_data("N/A", "Sin sensor SMART")
+                self.temp_card.update_data("N/A", "No SMART thermal sensor")
 
         if disk.power_on_hours is not None:
             hours = disk.power_on_hours
             if hours >= 8760:
                 years = hours / 8760.0
-                self.hours_card.update_data(f"{hours:,} hrs", f"Aprox. {years:.1f} años de uso continuo")
+                self.hours_card.update_data(f"{hours:,} hrs", f"Approx. {years:.1f} years power-on")
             elif hours >= 24:
                 days = hours / 24.0
-                self.hours_card.update_data(f"{hours:,} hrs", f"Aprox. {days:.1f} días de uso")
+                self.hours_card.update_data(f"{hours:,} hrs", f"Approx. {days:.1f} days power-on")
             else:
-                self.hours_card.update_data(f"{hours} hrs", "Uso reciente")
+                self.hours_card.update_data(f"{hours} hrs", "Recent usage")
         else:
             if not disk.attributes:
-                self.hours_card.update_data("---", "Presione 'Scan Now'")
+                self.hours_card.update_data("---", "Click 'Scan Now'")
             else:
-                self.hours_card.update_data("N/A", "No disponible")
+                self.hours_card.update_data("N/A", "Not available")
 
         if disk.power_cycles is not None:
-            self.cycles_card.update_data(f"{disk.power_cycles:,}", "Ciclos de encendido registrados")
+            self.cycles_card.update_data(f"{disk.power_cycles:,}", "Recorded power-on cycles")
         else:
             if not disk.attributes:
-                self.cycles_card.update_data("---", "Presione 'Scan Now'")
+                self.cycles_card.update_data("---", "Click 'Scan Now'")
             else:
-                self.cycles_card.update_data("N/A", "No disponible")
+                self.cycles_card.update_data("N/A", "Not available")
 
         # Table
         self._populate_table(disk)
 
     def _update_health_badge(self, disk: DiskInfo):
         if not disk.attributes and disk.health_status == HealthStatus.UNKNOWN:
-            self.health_badge.setText("⚪  SIN ESCANEAR")
+            self.health_badge.setText("⚪  UNSCANNED")
             self.health_badge.setStyleSheet(
                 "background-color: #21262d; color: #8b949e; border: 1px solid #30363d; "
-                "font-weight: bold; font-size: 12px; padding: 6px 14px; border-radius: 12px;"
+                "font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 12px;"
             )
             return
 
         status = disk.health_status
         if status == HealthStatus.HEALTHY:
-            self.health_badge.setText("🟢  SALUDABLE (PASSED)")
+            self.health_badge.setText("🟢  PASSED (HEALTHY)")
             self.health_badge.setStyleSheet(
                 "background-color: #04260f; color: #3fb950; border: 1px solid #238636; "
-                "font-weight: bold; font-size: 12px; padding: 6px 14px; border-radius: 12px;"
+                "font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 12px;"
             )
         elif status == HealthStatus.WARNING:
             self.health_badge.setText(f"🟡  {disk.health_summary.upper()}")
             self.health_badge.setStyleSheet(
                 "background-color: #382402; color: #e3b341; border: 1px solid #9e6a03; "
-                "font-weight: bold; font-size: 12px; padding: 6px 14px; border-radius: 12px;"
+                "font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 12px;"
             )
         elif status == HealthStatus.FAILED:
             self.health_badge.setText(f"🔴  {disk.health_summary.upper()}")
             self.health_badge.setStyleSheet(
                 "background-color: #490202; color: #ff7b72; border: 1px solid #da3633; "
-                "font-weight: bold; font-size: 12px; padding: 6px 14px; border-radius: 12px;"
+                "font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 12px;"
             )
         else:
             self.health_badge.setText(f"⚪  {disk.health_summary.upper()}")
             self.health_badge.setStyleSheet(
                 "background-color: #21262d; color: #8b949e; border: 1px solid #30363d; "
-                "font-weight: bold; font-size: 12px; padding: 6px 14px; border-radius: 12px;"
+                "font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 12px;"
             )
 
     def _populate_table(self, disk: DiskInfo):
         self.table.setRowCount(0)
         attrs = disk.attributes
-        self.table_count_lbl.setText(f"{len(attrs)} atributos")
+        self.table_count_lbl.setText(f"{len(attrs)} attributes")
 
         if not attrs:
             return
@@ -323,7 +337,7 @@ class DetailPanel(QWidget):
     def set_loading(self, is_loading: bool, message: str = ""):
         self.scan_btn.setEnabled(not is_loading)
         if is_loading:
-            self.scan_btn.setText("⏳ Escaneando...")
+            self.scan_btn.setText("⏳ Scanning...")
             self.status_msg_lbl.setText(f"⏳ {message}")
         else:
             self.scan_btn.setText("🔍 Scan Now")
@@ -336,3 +350,7 @@ class DetailPanel(QWidget):
     def _on_export_clicked(self):
         if self.current_disk:
             self.export_requested.emit(self.current_disk)
+
+    def _on_eject_clicked(self):
+        if self.current_disk:
+            self.eject_requested.emit(self.current_disk.device_path)

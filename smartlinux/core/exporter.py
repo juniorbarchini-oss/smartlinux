@@ -1,6 +1,5 @@
 import datetime
 import html
-import json
 import os
 import re
 from typing import List, Optional, Tuple
@@ -18,52 +17,52 @@ class ReportExporter:
     def generate_markdown(cls, disk: DiskInfo) -> str:
         """Generates a clean GFM markdown document for a single disk."""
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        host_info = f"Remoto ({disk.server_name})" if disk.is_remote else "Local (Este equipo)"
+        host_info = f"Remote ({disk.server_name})" if disk.is_remote else "Local Machine"
 
         health_icon = disk.health_status.icon
         health_label = disk.health_status.label
 
         md = []
-        md.append(f"# 📊 Informe de Diagnóstico S.M.A.R.T. - {disk.model}")
+        md.append(f"# 📊 S.M.A.R.T. Diagnostic Report - {disk.model}")
         md.append("")
-        md.append(f"> **Fecha y Hora:** `{now_str}`  ")
-        md.append(f"> **Ubicación:** `{host_info}`  ")
-        md.append(f"> **Dispositivo:** `{disk.device_path}`  ")
+        md.append(f"> **Date & Time:** `{now_str}`  ")
+        md.append(f"> **Host Location:** `{host_info}`  ")
+        md.append(f"> **Device Path:** `{disk.device_path}`  ")
         md.append("")
         md.append("---")
         md.append("")
 
         # Device Info
-        md.append("## 🖥️ Información del Dispositivo")
+        md.append("## 🖥️ Device Information")
         md.append("")
-        md.append("| Parámetro | Valor |")
+        md.append("| Property | Value |")
         md.append("| :--- | :--- |")
-        md.append(f"| **Modelo** | `{disk.model}` |")
-        md.append(f"| **Número de Serie** | `{disk.serial}` |")
-        md.append(f"| **Versión de Firmware** | `{disk.firmware}` |")
-        md.append(f"| **Capacidad Comercial** | `{disk.size_human}` |")
-        md.append(f"| **Interfaz / Protocolo** | `{disk.protocol}` |")
-        md.append(f"| **Tipo de Unidad** | `{disk.rotation_rate}` |")
-        md.append(f"| **Estado de Salud General** | {health_icon} **{health_label}** ({disk.health_summary}) |")
+        md.append(f"| **Model** | `{disk.model}` |")
+        md.append(f"| **Serial Number** | `{disk.serial}` |")
+        md.append(f"| **Firmware Version** | `{disk.firmware}` |")
+        md.append(f"| **Commercial Capacity** | `{disk.size_human}` |")
+        md.append(f"| **Bus Interface / Protocol** | `{disk.protocol}` |")
+        md.append(f"| **Device Type** | `{disk.rotation_rate}` |")
+        md.append(f"| **Overall Health Assessment** | {health_icon} **{health_label}** ({disk.health_summary}) |")
         md.append("")
 
         # Telemetry
-        md.append("## ⚡ Telemetría y Métricas Rápidas")
+        md.append("## ⚡ Telemetry & Quick Metrics")
         md.append("")
         temp_val = disk.formatted_temperature
         hours_val = disk.formatted_power_on
         cycles_val = f"{disk.power_cycles:,}" if disk.power_cycles is not None else "N/A"
 
-        md.append(f"* **🌡️ Temperatura Actual:** `{temp_val}`")
-        md.append(f"* **⏱️ Horas de Encendido (POH):** `{hours_val}`")
-        md.append(f"* **🔄 Ciclos de Encendido:** `{cycles_val}`")
+        md.append(f"* **🌡️ Temperature:** `{temp_val}`")
+        md.append(f"* **⏱️ Power-On Hours (POH):** `{hours_val}`")
+        md.append(f"* **🔄 Power Cycles:** `{cycles_val}`")
         md.append("")
 
         # SMART Attributes Table
-        md.append("## 📋 Tabla de Atributos S.M.A.R.T.")
+        md.append("## 📋 S.M.A.R.T. Attributes Table")
         md.append("")
         if disk.attributes:
-            md.append("| ID | Atributo / Parámetro | Valor Actual | Peor Valor | Umbral | Valor Crudo (Raw) | Estado |")
+            md.append("| ID | Attribute Name | Current | Worst | Threshold | Raw Value | Status |")
             md.append("| :---: | :--- | :---: | :---: | :---: | :--- | :---: |")
             for attr in disk.attributes:
                 icon = attr.status_type.icon
@@ -71,11 +70,11 @@ class ReportExporter:
                     f"| `{attr.id}` | **{attr.name}** | {attr.current} | {attr.worst} | {attr.threshold} | `{attr.raw}` | {icon} {attr.status} |"
                 )
         else:
-            md.append("*No se pudieron recuperar atributos SMART detallados para esta unidad.*")
+            md.append("*No detailed SMART attributes were recorded for this device.*")
         md.append("")
 
         md.append("---")
-        md.append("*Generado automáticamente por **SmartLinux** - Diagnóstico S.M.A.R.T. on-demand para Linux.*")
+        md.append("*Generated automatically by **SmartLinux** - On-Demand S.M.A.R.T. Diagnostics.*")
         return "\n".join(md)
 
     @classmethod
@@ -101,30 +100,30 @@ class ReportExporter:
             ".badge-warn { color: #b45309; font-weight: bold; }",
             ".badge-fail { color: #b91c1c; font-weight: bold; }",
             "</style></head><body>",
-            f"<h1>📊 Informe Consolidado de Diagnóstico S.M.A.R.T.</h1>",
-            f"<div class='meta'><b>Fecha de Emisión:</b> {now_str} &nbsp;|&nbsp; <b>Total de Discos:</b> {len(disks)} &nbsp;|&nbsp; <b>Generado por:</b> SmartLinux</div>"
+            f"<h1>📊 S.M.A.R.T. Diagnostic Consolidated Report</h1>",
+            f"<div class='meta'><b>Issue Date:</b> {now_str} &nbsp;|&nbsp; <b>Total Storage Devices:</b> {len(disks)} &nbsp;|&nbsp; <b>Tool:</b> SmartLinux</div>"
         ]
 
         for idx, disk in enumerate(disks):
-            host_info = f"Remoto ({disk.server_name})" if disk.is_remote else "Local"
+            host_info = f"Remote ({disk.server_name})" if disk.is_remote else "Local Machine"
             status_cls = "badge-ok" if disk.health_status == HealthStatus.HEALTHY else ("badge-warn" if disk.health_status == HealthStatus.WARNING else "badge-fail")
 
-            html_parts.append(f"<h2>Disco #{idx+1}: {html.escape(disk.model)} ({disk.size_human})</h2>")
-            html_parts.append(f"<p style='font-size: 10pt; margin: 4pt 0 8pt 0;'><b>Ubicación:</b> {host_info} &nbsp;|&nbsp; <b>Ruta:</b> <code>{html.escape(disk.device_path)}</code> &nbsp;|&nbsp; <b>S/N:</b> {html.escape(disk.serial)} &nbsp;|&nbsp; <b>Firmware:</b> {html.escape(disk.firmware)} &nbsp;|&nbsp; <b>Salud:</b> <span class='{status_cls}'>{disk.health_status.label}</span> ({html.escape(disk.health_summary)})</p>")
+            html_parts.append(f"<h2>Drive #{idx+1}: {html.escape(disk.model)} ({disk.size_human})</h2>")
+            html_parts.append(f"<p style='font-size: 10pt; margin: 4pt 0 8pt 0;'><b>Location:</b> {host_info} &nbsp;|&nbsp; <b>Path:</b> <code>{html.escape(disk.device_path)}</code> &nbsp;|&nbsp; <b>S/N:</b> {html.escape(disk.serial)} &nbsp;|&nbsp; <b>Firmware:</b> {html.escape(disk.firmware)} &nbsp;|&nbsp; <b>Health:</b> <span class='{status_cls}'>{disk.health_status.label}</span> ({html.escape(disk.health_summary)})</p>")
 
             temp_val = disk.formatted_temperature
             hours_val = disk.formatted_power_on
             cycles_val = f"{disk.power_cycles:,}" if disk.power_cycles is not None else "N/A"
 
             html_parts.append("<table class='metrics'><tr>")
-            html_parts.append(f"<td><div class='m-lbl'>🌡️ Temperatura</div><div class='m-val'>{temp_val}</div></td>")
-            html_parts.append(f"<td><div class='m-lbl'>⏱️ Horas Encendido</div><div class='m-val'>{hours_val}</div></td>")
-            html_parts.append(f"<td><div class='m-lbl'>🔄 Ciclos Energía</div><div class='m-val'>{cycles_val}</div></td>")
+            html_parts.append(f"<td><div class='m-lbl'>🌡️ Temperature</div><div class='m-val'>{temp_val}</div></td>")
+            html_parts.append(f"<td><div class='m-lbl'>⏱️ Power-On Time</div><div class='m-val'>{hours_val}</div></td>")
+            html_parts.append(f"<td><div class='m-lbl'>🔄 Power Cycles</div><div class='m-val'>{cycles_val}</div></td>")
             html_parts.append("</tr></table>")
 
             if disk.attributes:
                 html_parts.append("<table class='data'>")
-                html_parts.append("<tr><th width='8%' align='center'>ID</th><th width='32%' align='left'>Atributo SMART</th><th width='10%' align='center'>Actual</th><th width='10%' align='center'>Peor</th><th width='10%' align='center'>Umbral</th><th width='20%' align='left'>Valor Crudo</th><th width='10%' align='center'>Estado</th></tr>")
+                html_parts.append("<tr><th width='8%' align='center'>ID</th><th width='32%' align='left'>Attribute Name</th><th width='10%' align='center'>Current</th><th width='10%' align='center'>Worst</th><th width='10%' align='center'>Threshold</th><th width='20%' align='left'>Raw Value</th><th width='10%' align='center'>Status</th></tr>")
                 for attr in disk.attributes:
                     attr_cls = "badge-ok" if attr.status_type == HealthStatus.HEALTHY else ("badge-warn" if attr.status_type == HealthStatus.WARNING else "badge-fail")
                     html_parts.append(
@@ -138,7 +137,7 @@ class ReportExporter:
                     )
                 html_parts.append("</table>")
             else:
-                html_parts.append("<p><i>No se registraron atributos SMART detallados (disco sin escanear).</i></p>")
+                html_parts.append("<p><i>No detailed SMART attributes were recorded (device unscanned).</i></p>")
 
             if idx < len(disks) - 1:
                 html_parts.append("<hr style='border: 0; border-top: 1px dashed #cbd5e1; margin: 20pt 0;'>")
@@ -180,25 +179,25 @@ class ReportExporter:
             xml.append('   <Column ss:Width="90"/>')
             xml.append('   <Column ss:Width="220"/>')
 
-            xml.append(f'   <Row><Cell ss:StyleID="Title" ss:MergeAcross="7"><Data ss:Type="String">Informe SMART: {html.escape(disk.model)} ({disk.size_human}) - {now_str}</Data></Cell></Row>')
+            xml.append(f'   <Row><Cell ss:StyleID="Title" ss:MergeAcross="7"><Data ss:Type="String">S.M.A.R.T. Report: {html.escape(disk.model)} ({disk.size_human}) - {now_str}</Data></Cell></Row>')
             xml.append('   <Row/>')
 
-            host_info = f"Remoto ({disk.server_name})" if disk.is_remote else "Local"
-            xml.append(f'   <Row><Cell ss:StyleID="Bold"><Data ss:Type="String">Dispositivo:</Data></Cell><Cell><Data ss:Type="String">{disk.device_path}</Data></Cell><Cell ss:StyleID="Bold"><Data ss:Type="String">Ubicación:</Data></Cell><Cell><Data ss:Type="String">{host_info}</Data></Cell></Row>')
-            xml.append(f'   <Row><Cell ss:StyleID="Bold"><Data ss:Type="String">Número de Serie:</Data></Cell><Cell><Data ss:Type="String">{disk.serial}</Data></Cell><Cell ss:StyleID="Bold"><Data ss:Type="String">Firmware:</Data></Cell><Cell><Data ss:Type="String">{disk.firmware}</Data></Cell></Row>')
-            xml.append(f'   <Row><Cell ss:StyleID="Bold"><Data ss:Type="String">Salud General:</Data></Cell><Cell><Data ss:Type="String">{disk.health_status.label} ({disk.health_summary})</Data></Cell><Cell ss:StyleID="Bold"><Data ss:Type="String">Temperatura:</Data></Cell><Cell><Data ss:Type="String">{disk.formatted_temperature}</Data></Cell></Row>')
-            xml.append(f'   <Row><Cell ss:StyleID="Bold"><Data ss:Type="String">Horas Encendido:</Data></Cell><Cell><Data ss:Type="String">{disk.formatted_power_on}</Data></Cell><Cell ss:StyleID="Bold"><Data ss:Type="String">Ciclos Energía:</Data></Cell><Cell><Data ss:Type="String">{disk.power_cycles or "N/A"}</Data></Cell></Row>')
+            host_info = f"Remote ({disk.server_name})" if disk.is_remote else "Local Machine"
+            xml.append(f'   <Row><Cell ss:StyleID="Bold"><Data ss:Type="String">Device Path:</Data></Cell><Cell><Data ss:Type="String">{disk.device_path}</Data></Cell><Cell ss:StyleID="Bold"><Data ss:Type="String">Location:</Data></Cell><Cell><Data ss:Type="String">{host_info}</Data></Cell></Row>')
+            xml.append(f'   <Row><Cell ss:StyleID="Bold"><Data ss:Type="String">Serial Number:</Data></Cell><Cell><Data ss:Type="String">{disk.serial}</Data></Cell><Cell ss:StyleID="Bold"><Data ss:Type="String">Firmware:</Data></Cell><Cell><Data ss:Type="String">{disk.firmware}</Data></Cell></Row>')
+            xml.append(f'   <Row><Cell ss:StyleID="Bold"><Data ss:Type="String">Health Status:</Data></Cell><Cell><Data ss:Type="String">{disk.health_status.label} ({disk.health_summary})</Data></Cell><Cell ss:StyleID="Bold"><Data ss:Type="String">Temperature:</Data></Cell><Cell><Data ss:Type="String">{disk.formatted_temperature}</Data></Cell></Row>')
+            xml.append(f'   <Row><Cell ss:StyleID="Bold"><Data ss:Type="String">Power-On Hours:</Data></Cell><Cell><Data ss:Type="String">{disk.formatted_power_on}</Data></Cell><Cell ss:StyleID="Bold"><Data ss:Type="String">Power Cycles:</Data></Cell><Cell><Data ss:Type="String">{disk.power_cycles or "N/A"}</Data></Cell></Row>')
             xml.append('   <Row/>')
 
             xml.append('   <Row ss:StyleID="Header">')
             xml.append('    <Cell ss:StyleID="Header"><Data ss:Type="String">ID</Data></Cell>')
-            xml.append('    <Cell ss:StyleID="Header"><Data ss:Type="String">Atributo SMART</Data></Cell>')
-            xml.append('    <Cell ss:StyleID="Header"><Data ss:Type="String">Valor Actual</Data></Cell>')
-            xml.append('    <Cell ss:StyleID="Header"><Data ss:Type="String">Peor Valor</Data></Cell>')
-            xml.append('    <Cell ss:StyleID="Header"><Data ss:Type="String">Umbral</Data></Cell>')
-            xml.append('    <Cell ss:StyleID="Header"><Data ss:Type="String">Valor Crudo (Raw)</Data></Cell>')
-            xml.append('    <Cell ss:StyleID="Header"><Data ss:Type="String">Estado</Data></Cell>')
-            xml.append('    <Cell ss:StyleID="Header"><Data ss:Type="String">Descripción</Data></Cell>')
+            xml.append('    <Cell ss:StyleID="Header"><Data ss:Type="String">Attribute Name</Data></Cell>')
+            xml.append('    <Cell ss:StyleID="Header"><Data ss:Type="String">Current</Data></Cell>')
+            xml.append('    <Cell ss:StyleID="Header"><Data ss:Type="String">Worst</Data></Cell>')
+            xml.append('    <Cell ss:StyleID="Header"><Data ss:Type="String">Threshold</Data></Cell>')
+            xml.append('    <Cell ss:StyleID="Header"><Data ss:Type="String">Raw Value</Data></Cell>')
+            xml.append('    <Cell ss:StyleID="Header"><Data ss:Type="String">Status</Data></Cell>')
+            xml.append('    <Cell ss:StyleID="Header"><Data ss:Type="String">Description</Data></Cell>')
             xml.append('   </Row>')
 
             for attr in disk.attributes:
@@ -233,7 +232,7 @@ class ReportExporter:
         Returns (success, list_of_exported_file_paths).
         """
         if not disks:
-            return False, ["No se seleccionó ningún disco para exportar."]
+            return False, ["No storage drives selected for export."]
 
         os.makedirs(output_dir, exist_ok=True)
         date_tag = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -248,7 +247,7 @@ class ReportExporter:
                     safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', f"{d.name}_{d.model}").strip('_')
                     filename = f"SmartLinux_{safe_name}_{date_tag}.{file_format}"
                 else:
-                    filename = f"SmartLinux_Informe_Consolidado_{date_tag}.{file_format}"
+                    filename = f"SmartLinux_Consolidated_Report_{date_tag}.{file_format}"
 
                 full_path = os.path.join(output_dir, filename)
 
@@ -276,7 +275,7 @@ class ReportExporter:
                     with open(full_path, "w", encoding="utf-8") as f:
                         f.write(xml_content)
                 else:
-                    return False, [f"Formato no soportado: {file_format}"]
+                    return False, [f"Unsupported format: {file_format}"]
 
                 exported_files.append(full_path)
 
@@ -312,7 +311,7 @@ class ReportExporter:
             return True, exported_files
 
         except Exception as e:
-            return False, [f"Error al exportar: {str(e)}"]
+            return False, [f"Export error: {str(e)}"]
 
 
 MarkdownExporter = ReportExporter

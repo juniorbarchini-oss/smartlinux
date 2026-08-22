@@ -12,12 +12,12 @@ class HealthStatus(str, Enum):
     @property
     def label(self) -> str:
         if self == HealthStatus.HEALTHY:
-            return "SALUDABLE (PASSED)"
+            return "PASSED (HEALTHY)"
         elif self == HealthStatus.WARNING:
-            return "ADVERTENCIA"
+            return "WARNING"
         elif self == HealthStatus.FAILED:
-            return "FALLO CRÍTICO"
-        return "DESCONOCIDO"
+            return "CRITICAL FAILURE"
+        return "UNSCANNED"
 
     @property
     def color(self) -> str:
@@ -57,20 +57,21 @@ class SmartAttribute:
 class DiskInfo:
     device_path: str                 # e.g., "/dev/sda" or "/dev/nvme0n1"
     name: str                        # e.g., "sda"
-    model: str = "Desconocido"
+    model: str = "Unknown Drive"
     serial: str = "N/A"
     firmware: str = "N/A"
-    size_human: str = "Desconocido"  # e.g., "240.0 GB" or "1.0 TB"
+    size_human: str = "Unknown"      # e.g., "240.0 GB" or "1.0 TB"
     size_bytes: int = 0
     protocol: str = "ATA/SATA"       # SATA, NVMe, SCSI, USB
     rotation_rate: str = "SSD"       # "SSD" or "7200 RPM", etc.
     health_status: HealthStatus = HealthStatus.UNKNOWN
-    health_summary: str = "Sin escanear"
+    health_summary: str = "Unscanned"
     temperature_c: Optional[int] = None
     power_on_hours: Optional[int] = None
     power_cycles: Optional[int] = None
     attributes: List[SmartAttribute] = field(default_factory=list)
     is_remote: bool = False
+    is_usb: bool = False
     server_id: Optional[str] = None
     server_name: Optional[str] = None
     raw_json: Optional[Dict[str, Any]] = None
@@ -87,10 +88,10 @@ class DiskInfo:
         hours = self.power_on_hours
         if hours >= 8760:
             years = hours / 8760.0
-            return f"{hours:,} hrs ({years:.1f} años)"
+            return f"{hours:,} hrs ({years:.1f} yrs)"
         elif hours >= 24:
             days = hours / 24.0
-            return f"{hours:,} hrs ({days:.1f} días)"
+            return f"{hours:,} hrs ({days:.1f} days)"
         return f"{hours:,} hrs"
 
     @property
@@ -127,7 +128,7 @@ class ServerConfig:
     def from_dict(cls, data: Dict[str, Any]) -> "ServerConfig":
         return cls(
             id=data.get("id", ""),
-            name=data.get("name", "Servidor"),
+            name=data.get("name", "Server"),
             host=data.get("host", ""),
             port=data.get("port", 22),
             username=data.get("username", "root"),

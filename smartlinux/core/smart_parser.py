@@ -5,9 +5,8 @@ from .models import DiskInfo, SmartAttribute, HealthStatus
 def format_bytes_commercial(size_bytes: int) -> str:
     """Formats bytes into human readable commercial decimal units (GB/TB)."""
     if size_bytes <= 0:
-        return "Desconocido"
+        return "Unknown"
     
-    # Commercial drive capacity uses decimal 1000 base
     units = ["B", "KB", "MB", "GB", "TB", "PB"]
     size = float(size_bytes)
     unit_idx = 0
@@ -15,7 +14,7 @@ def format_bytes_commercial(size_bytes: int) -> str:
         size /= 1000.0
         unit_idx += 1
     
-    if unit_idx >= 3:  # GB or TB
+    if unit_idx >= 3:
         return f"{size:.1f} {units[unit_idx]}" if size < 100 else f"{int(round(size))} {units[unit_idx]}"
     return f"{size:.0f} {units[unit_idx]}"
 
@@ -24,13 +23,13 @@ class SmartParser:
     """Parses JSON output from smartctl (-j -a)."""
 
     CRITICAL_ATA_ATTRS = {
-        5: "Sectores Reasignados (Bad Sectors)",
-        187: "Errores No Corregibles Reportados",
-        188: "Tiempos de Espera de Comandos (Timeouts)",
-        196: "Eventos de Reasignación de Sectores",
-        197: "Sectores Pendientes de Reasignación",
-        198: "Sectores No Corregibles Offline",
-        199: "Errores CRC UDMA (Posible cable SATA defectuoso)"
+        5: "Reallocated Sectors (Bad Sectors)",
+        187: "Reported Uncorrectable Errors",
+        188: "Command Timeouts",
+        196: "Reallocation Event Count",
+        197: "Current Pending Sector Count",
+        198: "Offline Uncorrectable Sector Count",
+        199: "UDMA CRC Error Count (Potential cable/interface issue)"
     }
 
     @classmethod
@@ -47,7 +46,7 @@ class SmartParser:
             data.get("model_name") or 
             data.get("device", {}).get("model_name") or 
             data.get("model_family") or 
-            "Disco Genérico"
+            "Generic Drive"
         ).strip()
         disk.serial = data.get("serial_number", "N/A").strip()
         disk.firmware = data.get("firmware_version", "N/A").strip()
@@ -63,18 +62,19 @@ class SmartParser:
         dev_type = data.get("device", {}).get("type", "").upper()
         if "NVME" in dev_protocol or "NVME" in dev_type or "nvme" in disk.device_path:
             disk.protocol = "NVMe"
+        elif "USB" in dev_protocol or "USB" in dev_type or "usb" in disk.device_path:
+            disk.protocol = "USB"
+            disk.is_usb = True
         elif "SATA" in dev_protocol or "ATA" in dev_protocol:
             disk.protocol = "SATA"
         elif "SCSI" in dev_protocol or "SAS" in dev_protocol:
             disk.protocol = "SCSI/SAS"
-        elif "USB" in dev_protocol or "USB" in dev_type:
-            disk.protocol = "USB"
         else:
             disk.protocol = dev_protocol or "ATA/SATA"
 
         rot_rate = data.get("rotation_rate", 0)
         if rot_rate == 0 or "NVME" in disk.protocol:
-            disk.rotation_rate = "SSD (Estado Sólido)"
+            disk.rotation_rate = "SSD (Solid State)"
         else:
             disk.rotation_rate = f"{rot_rate} RPM (HDD)"
 
@@ -93,17 +93,14 @@ class SmartParser:
 
     @classmethod
     def _extract_telemetry(cls, data: Dict[str, Any], disk: DiskInfo):
-        # Temperature
         temp_dict = data.get("temperature", {})
         if "current" in temp_dict:
             disk.temperature_c = int(temp_dict["current"])
         
-        # Power on hours
         power_time = data.get("power_on_time", {})
         if "hours" in power_time:
             disk.power_on_hours = int(power_time["hours"])
         
-        # Power cycles
         if "power_cycle_count" in data:
             disk.power_cycles = int(data["power_cycle_count"])
 
@@ -130,29 +127,25 @@ class SmartParser:
             raw_str = raw_dict.get("string", str(raw_val))
             when_failed = item.get("when_failed", "")
 
-            # Determine attribute health status
             status_type = HealthStatus.HEALTHY
             status_str = "OK"
 
-            # Check threshold failure
             if (thresh > 0 and val <= thresh) or when_failed in ("FAILING_NOW", "In_the_past"):
                 status_type = HealthStatus.FAILED
-                status_str = "FALLO"
+                status_str = "FAIL"
                 has_critical_failure = True
-            # Check critical warning attributes
             elif attr_id in (5, 196, 197, 198) and raw_val > 0:
                 status_type = HealthStatus.WARNING
-                status_str = "ADVERTENCIA"
+                status_str = "WARNING"
                 has_warning = True
                 warning_reasons.append(f"{name}: {raw_str}")
             elif attr_id in (187, 188) and raw_val > 0:
                 status_type = HealthStatus.WARNING
-                status_str = "ATENCIÓN"
+                status_str = "ATTENTION"
                 has_warning = True
 
             desc = cls.CRITICAL_ATA_ATTRS.get(attr_id, "")
 
-            # Sync temperature if not found earlier
             if attr_id in (194, 190) and disk.temperature_c is None:
                 try:
                     disk.temperature_c = int(str(raw_str).split()[0])
@@ -173,19 +166,18 @@ class SmartParser:
 
         disk.attributes = attributes
 
-        # Overall health evaluation
         if has_critical_failure:
             disk.health_status = HealthStatus.FAILED
-            disk.health_summary = "Fallo Inminente / Umbral Superado"
+            disk.health_summary = "Imminent Failure / Threshold Breached"
         elif has_warning:
             disk.health_status = HealthStatus.WARNING
-            disk.health_summary = f"Advertencia: {', '.join(warning_reasons[:2])}"
+            disk.health_summary = f"Warning: {', '.join(warning_reasons[:2])}"
         elif passed:
             disk.health_status = HealthStatus.HEALTHY
-            disk.health_summary = "Saludable (Todos los parámetros en rango)"
+            disk.health_summary = "Healthy (All parameters within normal thresholds)"
         else:
             disk.health_status = HealthStatus.UNKNOWN
-            disk.health_summary = "Estado no determinado"
+            disk.health_summary = "Status undetermined"
 
     @classmethod
     def _parse_nvme_health(cls, data: Dict[str, Any], disk: DiskInfo):
@@ -212,7 +204,6 @@ class SmartParser:
         if power_cycles > 0:
             disk.power_cycles = power_cycles
 
-        # Build synthesized attribute list for NVMe
         attributes: List[SmartAttribute] = [
             SmartAttribute(
                 id=1,
@@ -221,9 +212,9 @@ class SmartParser:
                 worst="0",
                 threshold="0",
                 raw=f"0x{crit_warning:02X}",
-                status="OK" if crit_warning == 0 else "FALLO",
+                status="OK" if crit_warning == 0 else "FAIL",
                 status_type=HealthStatus.HEALTHY if crit_warning == 0 else HealthStatus.FAILED,
-                description="Advertencias críticas del controlador NVMe"
+                description="Controller critical warnings bitmask"
             ),
             SmartAttribute(
                 id=2,
@@ -232,9 +223,9 @@ class SmartParser:
                 worst=f"{avail_spare_thresh}%",
                 threshold=f"{avail_spare_thresh}%",
                 raw=f"{avail_spare}%",
-                status="OK" if avail_spare > avail_spare_thresh else "ADVERTENCIA",
+                status="OK" if avail_spare > avail_spare_thresh else "WARNING",
                 status_type=HealthStatus.HEALTHY if avail_spare > avail_spare_thresh else HealthStatus.WARNING,
-                description="Bloques de reserva restantes disponibles"
+                description="Remaining spare block capacity percentage"
             ),
             SmartAttribute(
                 id=3,
@@ -243,9 +234,9 @@ class SmartParser:
                 worst="100%",
                 threshold="100%",
                 raw=f"{pct_used}%",
-                status="OK" if pct_used < 90 else ("ADVERTENCIA" if pct_used < 100 else "FALLO"),
+                status="OK" if pct_used < 90 else ("WARNING" if pct_used < 100 else "FAIL"),
                 status_type=HealthStatus.HEALTHY if pct_used < 90 else (HealthStatus.WARNING if pct_used < 100 else HealthStatus.FAILED),
-                description="Porcentaje estimado de vida útil consumida del SSD"
+                description="Estimated percentage of device life consumed"
             ),
             SmartAttribute(
                 id=4,
@@ -254,9 +245,9 @@ class SmartParser:
                 worst="0",
                 threshold="0",
                 raw=str(media_errors),
-                status="OK" if media_errors == 0 else "FALLO",
+                status="OK" if media_errors == 0 else "FAIL",
                 status_type=HealthStatus.HEALTHY if media_errors == 0 else HealthStatus.FAILED,
-                description="Errores de integridad de datos no recuperables"
+                description="Unrecoverable data integrity and media errors"
             ),
             SmartAttribute(
                 id=5,
@@ -267,7 +258,7 @@ class SmartParser:
                 raw=str(unsafe_shutdowns),
                 status="OK",
                 status_type=HealthStatus.HEALTHY,
-                description="Apagados abruptos o pérdidas de energía"
+                description="Number of unsafe power cuts / abrupt shutdowns"
             ),
             SmartAttribute(
                 id=6,
@@ -278,7 +269,7 @@ class SmartParser:
                 raw=f"{data_units_read * 512 / (1000**3):.2f} TB" if data_units_read else "0 TB",
                 status="OK",
                 status_type=HealthStatus.HEALTHY,
-                description="Total de datos leídos (Host Reads)"
+                description="Total data read from device"
             ),
             SmartAttribute(
                 id=7,
@@ -289,22 +280,21 @@ class SmartParser:
                 raw=f"{data_units_written * 512 / (1000**3):.2f} TB" if data_units_written else "0 TB",
                 status="OK",
                 status_type=HealthStatus.HEALTHY,
-                description="Total de terabytes escritos (Host Writes)"
+                description="Total terabytes written to device"
             ),
         ]
 
         disk.attributes = attributes
 
-        # Health assessment
         if not passed or crit_warning > 0 or media_errors > 0:
             disk.health_status = HealthStatus.FAILED
-            disk.health_summary = "Fallo Crítico / Errores de Integridad"
+            disk.health_summary = "Critical Failure / Integrity Errors"
         elif avail_spare <= avail_spare_thresh or pct_used >= 95:
             disk.health_status = HealthStatus.WARNING
-            disk.health_summary = f"Advertencia: Desgaste alto ({pct_used}%) o Reserva baja ({avail_spare}%)"
+            disk.health_summary = f"Warning: High wear ({pct_used}%) or Low Spare ({avail_spare}%)"
         else:
             disk.health_status = HealthStatus.HEALTHY
-            disk.health_summary = "Saludable (NVMe Health Passed)"
+            disk.health_summary = "Healthy (NVMe Health Passed)"
 
     @classmethod
     def _parse_generic_health(cls, data: Dict[str, Any], disk: DiskInfo):
@@ -312,10 +302,10 @@ class SmartParser:
         passed = smart_status.get("passed")
         if passed is True:
             disk.health_status = HealthStatus.HEALTHY
-            disk.health_summary = "Saludable (SMART Status Passed)"
+            disk.health_summary = "Healthy (SMART Passed)"
         elif passed is False:
             disk.health_status = HealthStatus.FAILED
-            disk.health_summary = "Fallo Crítico detectado"
+            disk.health_summary = "Critical Failure Detected"
         else:
             disk.health_status = HealthStatus.UNKNOWN
-            disk.health_summary = "Información SMART no disponible"
+            disk.health_summary = "SMART telemetry not available"

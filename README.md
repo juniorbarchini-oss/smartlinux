@@ -1,50 +1,124 @@
-# SmartLinux - Diagnóstico S.M.A.R.T. On-Demand
+# 🐧 SmartLinux
 
-**SmartLinux** es una aplicación de escritorio nativa para Linux desarrollada con **Python 3 y PySide6 (Qt6)** diseñada para diagnosticar la salud, telemetría y estado S.M.A.R.T. de discos duros locales y remotos (Homelab) de forma visual, moderna y rápida.
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Framework](https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt6-brightgreen.svg)](https://wiki.qt.io/Qt_for_Python)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS-informational.svg)](https://github.com/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
----
-
-## ⚡ Filosofía de Diseño
-
-* **On-Demand:** Sin demonios ni procesos residentes en segundo plano. La app solo lee telemetría al abrirse o al pulsar *Scan Now*.
-* **100% Asíncrona:** Todas las consultas a discos locales y conexiones SSH remotas se ejecutan en hilos (`QThreadPool`) para mantener la interfaz siempre fluida y responsiva.
-* **Tema Oscuro Moderno:** Interfaz estilizada con tema oscuro de alto contraste y tarjetas visuales.
+**SmartLinux** is a modern, high-performance desktop application for storage drive health diagnostics, telemetry inspection, and S.M.A.R.T. attribute monitoring across local drives and remote SSH Homelab servers.
 
 ---
 
-## 🚀 Características Principales
+## ✨ Key Features
 
-### 1. Barra Lateral de Dispositivos
-* **Discos Locales:** Detección automática y filtrado de discos físicos reales (SATA, NVMe, USB), ignorando loops del sistema, volúmenes de Docker y discos virtuales.
-* **Discos Remotos (Homelab SSH):** Gestión interactiva de servidores remotos por SSH (autenticación por clave o contraseña).
-* **Semáforo Visual:** Iconos de estado en tiempo real (🟢 Saludable, 🟡 Advertencia, 🔴 Fallo).
-
-### 2. Panel de Detalle
-* **Cabecera:** Modelo, número de serie, firmware, protocolo y badge de salud general.
-* **Métricas Rápidas:** Cuadrículas visuales con temperatura actual (°C), horas totales de encendido (POH) y ciclos de energía.
-* **Tabla S.M.A.R.T.:** Tabla completa de atributos (ID, Nombre, Actual, Peor, Umbral, Raw, Estado).
-
-### 3. Acciones
-* **🔄 Scan Now:** Actualiza la telemetría del disco seleccionado de inmediato.
-* **📄 Export Report:** Genera informes consolidados en formato Markdown (`.md`) listos para archivar o importar en Obsidian / notas personales.
+* **⚡ Pure On-Demand Diagnostics:** 
+  Zero background spin-ups and zero unnecessary disk wear. Physical drives and remote servers are listed immediately in an unscanned state; S.M.A.R.T. telemetry is only read when you click **Scan Now**.
+* **🔌 Real-Time Hotplug Auto-Detection:** 
+  Zero-overhead Linux kernel Netlink uevent listener automatically detects connected or removed USB drives in real time without requiring manual refreshes.
+* **⏏️ Safely Eject USB Drives:** 
+  Safely unmounts and powers off external USB storage devices directly from the interface.
+* **🌐 Remote Homelab Monitoring via SSH:** 
+  Connect seamlessly to multiple remote servers (e.g., ZimaOS, Proxmox, TrueNAS, Raspberry Pi, Ubuntu Server, macOS) using Password or Private Key authentication with automatic sudo elevation.
+* **📄 Multi-Format Diagnostic Reports:** 
+  Export comprehensive diagnostic reports with custom drive selection and directory browsing:
+  * **📝 Markdown (`.md`):** Clean GitHub-Flavored Markdown tables.
+  * **📕 PDF Document (`.pdf`):** Styled report with telemetry metric boxes and colored status badges.
+  * **📘 Word Document (`.doc`):** Fully formatted Microsoft Word / LibreOffice Writer report.
+  * **📊 Excel Spreadsheet (`.xls`):** Multi-sheet Excel workbook with per-attribute columns.
+* **🎨 Modern High-Contrast Dark UI:** 
+  Crisp typography (+15px readable scale), responsive telemetry cards (Temperature, Power-On Hours, Power Cycles), and full ATA / NVMe SMART attribute tables.
 
 ---
 
-## 📦 Instalación y Ejecución
+## 🛠️ System Requirements
 
-### Requisitos Previos
-* Linux (x86_64 / aarch64)
-* `smartmontools` (`smartctl`)
-* Python >= 3.10
+* **Operating System:** Linux (Ubuntu, Debian, Fedora, Arch, etc.) or macOS (Darwin).
+* **Python:** Python 3.10 or higher.
+* **smartmontools:** `smartctl` utility installed on the system.
 
-### Ejecución Directa
+### Installing Dependencies
+
+#### Ubuntu / Debian / Pop!_OS:
 ```bash
-cd /home/hbarchini/Documents/desarrollo/smartlinux
-./smartlinux.sh
+sudo apt update
+sudo apt install python3 python3-pip python3-venv smartmontools libxcb-cursor0
 ```
 
-O activando el entorno virtual manualmente:
+#### Fedora / RHEL:
 ```bash
-source .venv/bin/activate
-python3 smartlinux/main.py
+sudo dnf install python3 python3-pip smartmontools
 ```
+
+#### Arch Linux:
+```bash
+sudo pacman -S python python-pip smartmontools
+```
+
+#### macOS:
+```bash
+brew install python smartmontools
+```
+
+---
+
+## 🔒 Permission Setup (Local SUID)
+
+To allow SmartLinux to read local raw disk health without prompting for root passwords on every startup, set the SUID bit on `smartctl`:
+
+```bash
+sudo chmod u+s /usr/sbin/smartctl
+```
+
+*(On systems where `smartctl` is in `/usr/local/sbin/smartctl`, adjust the path accordingly).*
+
+---
+
+## 🚀 Installation & Quick Start
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/hbarchini/smartlinux.git
+   cd smartlinux
+   ```
+
+2. **Run the launcher script:**
+   The included `smartlinux.sh` script automatically provisions the virtual environment, installs dependencies, and launches the application:
+   ```bash
+   chmod +x smartlinux.sh
+   ./smartlinux.sh
+   ```
+
+---
+
+## 📂 Project Architecture
+
+```
+smartlinux/
+├── smartlinux/
+│   ├── core/
+│   │   ├── models.py           # Data models (DiskInfo, SmartAttribute, ServerConfig)
+│   │   ├── detector.py         # Local disk discovery and safe ejection
+│   │   ├── smart_parser.py     # ATA/SATA and NVMe SMART JSON parser
+│   │   ├── ssh_client.py       # Cross-platform SSH client with sudo elevation
+│   │   ├── watcher.py          # Netlink kernel uevent hotplug watcher
+│   │   ├── exporter.py         # Multi-format report exporter (.md, .pdf, .doc, .xls)
+│   │   └── config_manager.py   # Server persistence (~/.config/smartlinux/)
+│   ├── ui/
+│   │   ├── theme.py            # Dark theme stylesheet (QSS)
+│   │   ├── main_window.py      # Main window & background worker orchestration
+│   │   ├── sidebar.py          # Device tree with health badges and context menus
+│   │   ├── detail_panel.py     # Telemetry metric cards and attribute table
+│   │   ├── server_dialog.py    # Remote SSH server configuration modal
+│   │   └── export_dialog.py    # Multi-disk and multi-format export dialog
+│   ├── __init__.py
+│   └── main.py                 # Application entry point
+├── smartlinux.sh               # One-click launcher script
+├── requirements.txt            # Python dependencies (PySide6, paramiko)
+└── README.md                   # Documentation
+```
+
+---
+
+## 📄 License
+
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.

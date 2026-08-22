@@ -38,38 +38,36 @@ class LocalDiskDetector:
             is_mac = (platform.system() == "Darwin")
             if is_mac:
                 return False, (
-                    "El comando 'smartctl' no está instalado en este sistema.\n"
-                    "En macOS, instálelo con Homebrew ejecutando:\n"
+                    "Command 'smartctl' is not installed on this system.\n"
+                    "On macOS, please install it via Homebrew:\n"
                     "brew install smartmontools"
                 )
             else:
                 return False, (
-                    "El comando 'smartctl' no está instalado en el sistema.\n"
-                    "Instale el paquete 'smartmontools' ejecutando:\n"
-                    "sudo apt install smartmontools  (o el gestor de paquetes de su distribución)"
+                    "Command 'smartctl' is not installed on this system.\n"
+                    "Please install the 'smartmontools' package via your package manager:\n"
+                    "sudo apt install smartmontools"
                 )
 
-        # Test running smartctl --version
         try:
             res = subprocess.run([smartctl_path, "--version"], capture_output=True, text=True, timeout=3)
             if res.returncode != 0:
-                return False, f"Error al ejecutar smartctl: {res.stderr.strip()}"
+                return False, f"Error executing smartctl: {res.stderr.strip()}"
         except Exception as e:
-            return False, f"Excepción al ejecutar smartctl: {str(e)}"
+            return False, f"Exception executing smartctl: {str(e)}"
 
-        # Test running smartctl --scan -j to check permissions
         try:
             scan_res = subprocess.run([smartctl_path, "--scan", "-j"], capture_output=True, text=True, timeout=5)
             if scan_res.returncode == 0:
-                return True, "smartctl disponible y con permisos configurados."
+                return True, "smartctl is available with configured permissions."
             else:
                 return False, (
-                    "smartctl requiere permisos para acceder a los dispositivos de bloque.\n"
-                    "Configure el bit SUID ejecutando:\n"
+                    "smartctl requires permissions to access block storage devices.\n"
+                    "Set the SUID bit by running:\n"
                     f"sudo chmod u+s {smartctl_path}"
                 )
         except Exception as e:
-            return False, f"Error al comprobar permisos de smartctl: {str(e)}"
+            return False, f"Error checking smartctl permissions: {str(e)}"
 
     @classmethod
     def discover_drives(cls) -> List[DiskInfo]:
@@ -80,33 +78,12 @@ class LocalDiskDetector:
         smartctl_bin = cls.get_smartctl_bin()
         is_darwin = (platform.system() == "Darwin")
 
-        # Tier 1: smartctl --scan -j
-        try:
-            proc = subprocess.run([smartctl_bin, "--scan", "-j"], capture_output=True, text=True, timeout=5)
-            if proc.returncode == 0 and proc.stdout.strip():
-                data = json.loads(proc.stdout)
-                for dev in data.get("devices", []):
-                    dev_name = dev.get("name", "")
-                    if not dev_name:
-                        continue
-                    if any(x in dev_name for x in ["/loop", "/ram", "/zram", "/dm-", "/sr"]):
-                        continue
-                    disk = DiskInfo(
-                        device_path=dev_name,
-                        name=dev_name.split("/")[-1],
-                        model="Disco Físico",
-                        protocol=dev.get("protocol", "SATA").upper()
-                    )
-                    drives.append(disk)
-        except Exception as e:
-            print(f"Error scanning with smartctl: {e}")
-
-        # Linux Tier 2: lsblk
-        if not drives and not is_darwin:
+        # Linux Specific Tier 1: lsblk (Rich metadata including TRAN=usb)
+        if not is_darwin:
             try:
-                cmd = ["lsblk", "-J", "-d", "-o", "NAME,PATH,MODEL,SIZE,TRAN,TYPE,ROTA"]
+                cmd = ["lsblk", "-J", "-d", "-o", "NAME,PATH,MODEL,SIZE,TRAN,TYPE,ROTA,HOTPLUG,RM"]
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-                if proc.returncode == 0:
+                if proc.returncode == 0 and proc.stdout.strip():
                     data = json.loads(proc.stdout)
                     for dev in data.get("blockdevices", []):
                         dev_name = dev.get("name", "")
@@ -118,20 +95,49 @@ class LocalDiskDetector:
                         if any(dev_name.startswith(p) for p in ["loop", "ram", "zram", "dm-", "sr", "cdrom"]):
                             continue
 
-                        model = dev.get("model") or "Disco Físico"
-                        size_str = dev.get("size") or "Desconocido"
-                        tran = dev.get("tran") or "SATA"
+                        model = dev.get("model") or "Physical Drive"
+                        size_str = dev.get("size") or "Unknown"
+                        tran = (dev.get("tran") or "").upper()
+                        is_rm = dev.get("rm") in (True, "1", 1) or dev.get("hotplug") in (True, "1", 1) or (tran == "USB")
 
                         disk = DiskInfo(
                             device_path=dev_path,
                             name=dev_name,
                             model=model.strip(),
                             size_human=size_str,
-                            protocol=tran.upper() if tran else "ATA/SATA"
+                            protocol=tran if tran else "ATA/SATA",
+                            is_usb=(tran == "USB" or is_rm)
                         )
                         drives.append(disk)
             except Exception as e:
                 print(f"Error enumerating drives with lsblk: {e}")
+
+        # Universal Tier 2: smartctl --scan -j
+        if not drives:
+            try:
+                proc = subprocess.run([smartctl_bin, "--scan", "-j"], capture_output=True, text=True, timeout=5)
+                if proc.returncode == 0 and proc.stdout.strip():
+                    data = json.loads(proc.stdout)
+                    for dev in data.get("devices", []):
+                        dev_name = dev.get("name", "")
+                        if not dev_name:
+                            continue
+                        if any(x in dev_name for x in ["/loop", "/ram", "/zram", "/dm-", "/sr"]):
+                            continue
+                        
+                        protocol = dev.get("protocol", "SATA").upper()
+                        is_usb = ("USB" in protocol or "usb" in dev_name)
+
+                        disk = DiskInfo(
+                            device_path=dev_name,
+                            name=dev_name.split("/")[-1],
+                            model="Physical Drive",
+                            protocol=protocol,
+                            is_usb=is_usb
+                        )
+                        drives.append(disk)
+            except Exception as e:
+                print(f"Error scanning with smartctl: {e}")
 
         return drives
 
@@ -155,8 +161,8 @@ class LocalDiskDetector:
                 device_path=device_path,
                 name=device_path.split("/")[-1],
                 health_status=HealthStatus.FAILED,
-                health_summary="Error al decodificar salida de smartctl",
-                error_message=proc.stderr.strip() or "Salida vacía o no válida"
+                health_summary="Error decoding smartctl output",
+                error_message=proc.stderr.strip() or "Empty or invalid output"
             )
             return disk
 
@@ -165,7 +171,41 @@ class LocalDiskDetector:
                 device_path=device_path,
                 name=device_path.split("/")[-1],
                 health_status=HealthStatus.UNKNOWN,
-                health_summary="Error al ejecutar smartctl",
+                health_summary="Error executing smartctl",
                 error_message=str(e)
             )
             return disk
+
+    @classmethod
+    def eject_drive(cls, device_path: str) -> Tuple[bool, str]:
+        """
+        Safely unmounts and powers off an external removable/USB drive.
+        """
+        try:
+            # 1. Unmount partitions via udisksctl
+            unmount_proc = subprocess.run(
+                ["udisksctl", "unmount", "-b", device_path],
+                capture_output=True, text=True, timeout=6
+            )
+            
+            # 2. Power off device cleanly
+            poweroff_proc = subprocess.run(
+                ["udisksctl", "power-off", "-b", device_path],
+                capture_output=True, text=True, timeout=6
+            )
+            
+            if poweroff_proc.returncode == 0:
+                return True, f"Drive '{device_path}' safely disconnected and powered off."
+            
+            # Fallback to standard eject
+            eject_proc = subprocess.run(
+                ["eject", device_path],
+                capture_output=True, text=True, timeout=6
+            )
+            if eject_proc.returncode == 0:
+                return True, f"Drive '{device_path}' safely ejected."
+            
+            err = poweroff_proc.stderr.strip() or eject_proc.stderr.strip() or unmount_proc.stderr.strip()
+            return False, f"Could not eject drive: {err}"
+        except Exception as e:
+            return False, f"Error ejecting drive: {str(e)}"

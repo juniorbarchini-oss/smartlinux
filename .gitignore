@@ -8,3 +8,13 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+dist/
+build/
+*.spec
+*.zip
+*.tar.gz
+*.pdf
+*.doc
+*.xls
+*.xlsx
+.pytest_cache/

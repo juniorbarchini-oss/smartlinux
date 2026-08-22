@@ -74,20 +74,6 @@ class ReportExporter:
             md.append("*No se pudieron recuperar atributos SMART detallados para esta unidad.*")
         md.append("")
 
-        # Raw JSON Log
-        if disk.raw_json:
-            md.append("---")
-            md.append("")
-            md.append("## 🔍 Registro Técnico Raw JSON (smartctl)")
-            md.append("<details>")
-            md.append("<summary>Haga clic para desplegar los datos crudos en formato JSON</summary>")
-            md.append("")
-            md.append("```json")
-            md.append(json.dumps(disk.raw_json, indent=2, ensure_ascii=False))
-            md.append("```")
-            md.append("</details>")
-            md.append("")
-
         md.append("---")
         md.append("*Generado automáticamente por **SmartLinux** - Diagnóstico S.M.A.R.T. on-demand para Linux.*")
         return "\n".join(md)

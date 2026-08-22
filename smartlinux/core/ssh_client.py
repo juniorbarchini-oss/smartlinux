@@ -1,10 +1,30 @@
 import json
 import os
-import shlex
+import re
 from typing import List, Tuple, Optional, Dict, Any
 import paramiko
 from .models import ServerConfig, DiskInfo, HealthStatus
 from .smart_parser import SmartParser
+
+
+def extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+    """Extracts JSON object from text even if preceded/followed by sudo banners or motd."""
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(text[start:end+1])
+        except Exception:
+            pass
+    return None
 
 
 class RemoteSSHClient:
@@ -72,32 +92,38 @@ class RemoteSSHClient:
             return self._client.get_transport().is_active()
         return False
 
-    def _exec_command(self, cmd: str, timeout: int = 12) -> Tuple[int, str, str]:
-        """Executes a command over SSH, handling sudo if user is non-root."""
+    def _exec_command(self, cmd: str, timeout: int = 15) -> Tuple[int, str, str]:
+        """Executes a command over SSH with full PATH and transparent sudo support."""
         if not self.is_connected():
             ok, msg = self.connect()
             if not ok:
                 return -1, "", msg
 
+        path_env = "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH; "
+        full_cmd = path_env + cmd
+
+        # 1. Direct execution attempt
         try:
-            # First try direct execution
-            stdin, stdout, stderr = self._client.exec_command(cmd, timeout=timeout)
+            stdin, stdout, stderr = self._client.exec_command(full_cmd, timeout=timeout)
             exit_status = stdout.channel.recv_exit_status()
             out_str = stdout.read().decode("utf-8", errors="replace")
             err_str = stderr.read().decode("utf-8", errors="replace")
 
-            # If failed due to permissions and we have a password and non-root, try sudo -S
-            if exit_status != 0 and self.config.username != "root" and self.config.password:
-                if "permission denied" in err_str.lower() or "operation not permitted" in err_str.lower() or not out_str.strip():
-                    sudo_cmd = f"sudo -S -p '' {cmd}"
-                    s_stdin, s_stdout, s_stderr = self._client.exec_command(sudo_cmd, timeout=timeout)
-                    s_stdin.write(self.config.password + "\n")
-                    s_stdin.flush()
-                    s_exit = s_stdout.channel.recv_exit_status()
-                    s_out = s_stdout.read().decode("utf-8", errors="replace")
-                    s_err = s_stderr.read().decode("utf-8", errors="replace")
-                    if s_exit == 0 or s_out.strip():
-                        return s_exit, s_out, s_err
+            # Check if output contains valid json despite return code
+            if extract_json_object(out_str) is not None:
+                return exit_status, out_str, err_str
+
+            # If user is not root and failed or got permission error, try sudo -S
+            if self.config.username != "root" and self.config.password:
+                if exit_status != 0 or "permission denied" in err_str.lower() or not out_str.strip():
+                    sudo_cmd = path_env + f"sudo -S -p '' {cmd}"
+                    s_in, s_out, s_err = self._client.exec_command(sudo_cmd, timeout=timeout)
+                    s_in.write(self.config.password + "\n")
+                    s_in.flush()
+                    s_exit = s_out.channel.recv_exit_status()
+                    s_out_str = s_out.read().decode("utf-8", errors="replace")
+                    s_err_str = s_err.read().decode("utf-8", errors="replace")
+                    return s_exit, s_out_str, s_err_str
 
             return exit_status, out_str, err_str
         except Exception as e:
@@ -109,59 +135,72 @@ class RemoteSSHClient:
         
         # 1. Try lsblk JSON
         code, out, err = self._exec_command("lsblk -J -d -o NAME,PATH,MODEL,SIZE,TRAN,TYPE,ROTA")
-        if code == 0 and out.strip():
-            try:
-                data = json.loads(out)
-                for dev in data.get("blockdevices", []):
+        json_data = extract_json_object(out)
+        
+        if json_data and "blockdevices" in json_data:
+            for dev in json_data.get("blockdevices", []):
+                dev_name = dev.get("name", "")
+                dev_path = dev.get("path", f"/dev/{dev_name}")
+                dev_type = dev.get("type", "").lower()
+                
+                if dev_type != "disk":
+                    continue
+                if any(dev_name.startswith(p) for p in ["loop", "ram", "zram", "dm-", "sr", "cdrom"]):
+                    continue
+
+                model = dev.get("model") or "Disco Remoto"
+                size_str = dev.get("size") or "Desconocido"
+                tran = dev.get("tran") or "SATA"
+
+                disk = DiskInfo(
+                    device_path=dev_path,
+                    name=dev_name,
+                    model=model.strip(),
+                    size_human=size_str,
+                    protocol=tran.upper() if tran else "ATA/SATA",
+                    is_remote=True,
+                    server_id=self.config.id,
+                    server_name=self.config.name
+                )
+                drives.append(disk)
+
+        # 2. Fallback: smartctl --scan -j
+        if not drives:
+            code, out, err = self._exec_command("smartctl --scan -j")
+            json_scan = extract_json_object(out)
+            if json_scan and "devices" in json_scan:
+                for dev in json_scan.get("devices", []):
                     dev_name = dev.get("name", "")
-                    dev_path = dev.get("path", f"/dev/{dev_name}")
-                    dev_type = dev.get("type", "").lower()
-                    
-                    if dev_type != "disk":
+                    if not dev_name:
                         continue
-                    if any(dev_name.startswith(p) for p in ["loop", "ram", "zram", "dm-", "sr", "cdrom"]):
-                        continue
-
-                    model = dev.get("model") or "Disco Remoto"
-                    size_str = dev.get("size") or "Desconocido"
-                    tran = dev.get("tran") or "SATA"
-
                     disk = DiskInfo(
-                        device_path=dev_path,
-                        name=dev_name,
-                        model=model.strip(),
-                        size_human=size_str,
-                        protocol=tran.upper() if tran else "ATA/SATA",
+                        device_path=dev_name,
+                        name=dev_name.split("/")[-1],
+                        model="Disco Remoto",
+                        protocol=dev.get("protocol", "SATA"),
                         is_remote=True,
                         server_id=self.config.id,
                         server_name=self.config.name
                     )
                     drives.append(disk)
-            except Exception as e:
-                print(f"Error parsing remote lsblk: {e}")
 
-        # 2. If lsblk returned nothing, fallback to smartctl --scan -j
+        # 3. Fallback: inspect /sys/block/
         if not drives:
-            code, out, err = self._exec_command("smartctl --scan -j")
+            code, out, err = self._exec_command("ls -d /sys/block/sd* /sys/block/nvme* 2>/dev/null")
             if out.strip():
-                try:
-                    data = json.loads(out)
-                    for dev in data.get("devices", []):
-                        dev_name = dev.get("name", "")
-                        if not dev_name:
-                            continue
-                        disk = DiskInfo(
-                            device_path=dev_name,
-                            name=dev_name.split("/")[-1],
-                            model="Disco Remoto",
-                            protocol=dev.get("protocol", "SATA"),
-                            is_remote=True,
-                            server_id=self.config.id,
-                            server_name=self.config.name
-                        )
-                        drives.append(disk)
-                except Exception as e:
-                    print(f"Error parsing remote smartctl scan: {e}")
+                for line in out.strip().splitlines():
+                    name = line.strip().split("/")[-1]
+                    if not name or "loop" in name or "ram" in name:
+                        continue
+                    disk = DiskInfo(
+                        device_path=f"/dev/{name}",
+                        name=name,
+                        model="Disco Físico Remoto",
+                        is_remote=True,
+                        server_id=self.config.id,
+                        server_name=self.config.name
+                    )
+                    drives.append(disk)
 
         return drives
 
@@ -170,18 +209,26 @@ class RemoteSSHClient:
         cmd = f"smartctl -j -a {device_path}"
         code, out, err = self._exec_command(cmd)
 
-        if out.strip():
+        json_data = extract_json_object(out)
+        if json_data:
             try:
-                data = json.loads(out)
-                disk = SmartParser.parse_smart_json(data, device_path)
+                disk = SmartParser.parse_smart_json(json_data, device_path)
                 disk.is_remote = True
                 disk.server_id = self.config.id
                 disk.server_name = self.config.name
                 return disk
-            except json.JSONDecodeError:
-                pass
+            except Exception as e:
+                print(f"Error parsing SMART JSON: {e}")
 
-        # Failed
+        # Failed reading
+        error_detail = err.strip()
+        if "not found" in error_detail.lower():
+            error_detail = "smartctl no está instalado en el servidor remoto. Instale 'smartmontools'."
+        elif "permission denied" in error_detail.lower() or "operation not permitted" in error_detail.lower():
+            error_detail = "Permiso denegado en el servidor remoto. Configure permisos sudo o SUID para smartctl."
+        elif not error_detail:
+            error_detail = f"Sin respuesta SMART (código {code})"
+
         disk = DiskInfo(
             device_path=device_path,
             name=device_path.split("/")[-1],
@@ -189,7 +236,7 @@ class RemoteSSHClient:
             server_id=self.config.id,
             server_name=self.config.name,
             health_status=HealthStatus.FAILED,
-            health_summary="Error al leer SMART vía SSH",
-            error_message=err.strip() or f"Código de retorno: {code}"
+            health_summary="Fallo de lectura SMART",
+            error_message=error_detail
         )
         return disk

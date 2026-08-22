@@ -98,6 +98,21 @@ class DetailPanel(QWidget):
 
         main_layout.addWidget(self.header_card)
 
+        # 1.1 Error / Diagnostics Notification Banner (Hidden by default)
+        self.error_banner = QFrame()
+        self.error_banner.setObjectName("AlertBanner")
+        self.error_banner.setVisible(False)
+        eb_layout = QHBoxLayout(self.error_banner)
+        eb_layout.setContentsMargins(12, 8, 12, 8)
+        self.error_icon = QLabel("⚠️")
+        self.error_icon.setStyleSheet("font-size: 16px;")
+        eb_layout.addWidget(self.error_icon)
+        self.error_lbl = QLabel("")
+        self.error_lbl.setWordWrap(True)
+        self.error_lbl.setStyleSheet("color: #ff7b72; font-size: 12px; font-weight: 500;")
+        eb_layout.addWidget(self.error_lbl, 1)
+        main_layout.addWidget(self.error_banner)
+
         # 2. Quick Metrics Grid
         metrics_layout = QHBoxLayout()
         metrics_layout.setSpacing(12)
@@ -163,7 +178,7 @@ class DetailPanel(QWidget):
         """Displays full telemetry and attributes for the given disk."""
         self.current_disk = disk
         self.scan_btn.setEnabled(True)
-        self.export_btn.setEnabled(True)
+        self.export_btn.setEnabled(len(disk.attributes) > 0)
 
         # Header Info
         host_tag = f"[{disk.server_name}] " if disk.is_remote and disk.server_name else ""
@@ -176,6 +191,13 @@ class DetailPanel(QWidget):
             f"Tipo: <b>{disk.protocol} ({disk.rotation_rate})</b>"
         )
         self.info_lbl.setText(info_text)
+
+        # Error Banner
+        if disk.error_message:
+            self.error_lbl.setText(f"Diagnóstico no disponible: {disk.error_message}")
+            self.error_banner.setVisible(True)
+        else:
+            self.error_banner.setVisible(False)
 
         # Health Badge
         self._update_health_badge(disk)

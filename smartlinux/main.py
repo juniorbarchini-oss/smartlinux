@@ -1,7 +1,7 @@
 import sys
 import os
 from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QGuiApplication
 
 # Ensure package is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -14,10 +14,13 @@ def main():
     os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
     
     app = QApplication(sys.argv)
-    app.setApplicationName("SmartLinux")
+    
+    # Critical for GNOME / Ubuntu Dock / Wayland window grouping & icon recognition
+    app.setApplicationName("smartlinux")
     app.setApplicationDisplayName("SmartLinux - S.M.A.R.T. Health Diagnostics")
     app.setOrganizationName("Homelab")
-    
+    QGuiApplication.setDesktopFileName("smartlinux")
+
     # Load Application Icon
     icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
     if os.path.exists(icon_path):

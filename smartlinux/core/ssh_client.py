@@ -273,23 +273,53 @@ class RemoteSSHClient:
         return drives
 
     def read_remote_drive_smart(self, device_path: str) -> DiskInfo:
-        code, out, err = self.exec_smartctl(f"-j -a {device_path}")
+        device_types = [None, "scsi", "sat,auto", "sntrealtek", "sntjmicron", "sntasmedia", "usbjmicron", "usbsunplus"]
+        best_disk = None
+        last_error = ""
+        last_json = None
+        last_code = 0
 
-        json_data = extract_json_object(out)
-        if json_data and not is_permission_denied_json(json_data):
-            try:
-                disk = SmartParser.parse_smart_json(json_data, device_path)
-                disk.is_remote = True
-                disk.server_id = self.config.id
-                disk.server_name = self.config.name
-                return disk
-            except Exception as e:
-                print(f"Error parsing SMART JSON: {e}")
+        for dev_type in device_types:
+            opt = f"-d {dev_type} " if dev_type else ""
+            code, out, err = self.exec_smartctl(f"-j {opt}-a {device_path}")
+            last_code = code
+            json_data = extract_json_object(out)
+            if json_data:
+                last_json = json_data
+                if not is_permission_denied_json(json_data):
+                    has_smart = (
+                        "smart_status" in json_data or 
+                        "ata_smart_attributes" in json_data or 
+                        "nvme_smart_health_information_log" in json_data
+                    )
+                    has_identity = (
+                        "model_name" in json_data or 
+                        "scsi_product" in json_data or 
+                        "user_capacity" in json_data or
+                        "serial_number" in json_data
+                    )
+                    if has_smart or has_identity:
+                        try:
+                            disk = SmartParser.parse_smart_json(json_data, device_path)
+                            disk.is_remote = True
+                            disk.server_id = self.config.id
+                            disk.server_name = self.config.name
+                            if disk.health_status != HealthStatus.UNKNOWN and disk.size_bytes > 0:
+                                return disk
+                            if best_disk is None or (disk.size_bytes > 0 and best_disk.size_bytes == 0):
+                                best_disk = disk
+                        except Exception as e:
+                            print(f"Error parsing SMART JSON: {e}")
+            if err:
+                last_error = err.strip()
 
-        error_detail = err.strip()
-        if is_permission_denied_json(json_data):
+        if best_disk and (best_disk.size_bytes > 0 or best_disk.model != "Generic Drive"):
+            return best_disk
+
+        error_detail = last_error
+        if last_json and is_permission_denied_json(last_json):
             error_detail = "Permission denied: administrator / sudo privileges required."
-        elif "not found" in error_detail.lower() or "command not found" in out.lower():
+        elif "not found" in error_detail.lower():
             if self._remote_os == "Darwin":
                 error_detail = "smartctl not found. Install on macOS with: brew install smartmontools"
             else:
@@ -297,7 +327,7 @@ class RemoteSSHClient:
         elif "permission denied" in error_detail.lower() or "operation not permitted" in error_detail.lower():
             error_detail = "Permission denied accessing block device. Check sudo or SUID permissions."
         elif not error_detail:
-            error_detail = f"No valid SMART response from device (exit code {code})"
+            error_detail = f"No valid SMART response from device (exit code {last_code})"
 
         disk = DiskInfo(
             device_path=device_path,

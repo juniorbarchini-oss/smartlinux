@@ -225,6 +225,8 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"{len(drives)} local drive(s) detected. Select a drive and click 'Scan Now'.")
         if updated_drives and not self.detail_panel.current_disk:
             self.detail_panel.display_disk(updated_drives[0])
+            if not updated_drives[0].attributes and updated_drives[0].health_status == HealthStatus.UNKNOWN:
+                self._scan_single_disk(updated_drives[0])
 
     # ---------------- REMOTE SERVERS DISCOVERY (ON-DEMAND) ----------------
 
@@ -287,6 +289,8 @@ class MainWindow(QMainWindow):
         key = f"{disk.server_id or 'local'}_{disk.device_path}"
         current = self._all_known_disks.get(key, disk)
         self.detail_panel.display_disk(current)
+        if not current.attributes and current.health_status == HealthStatus.UNKNOWN:
+            self._scan_single_disk(current)
 
     def _scan_single_disk(self, disk: DiskInfo):
         self.detail_panel.set_loading(True, f"Reading SMART telemetry for {disk.name}...")

@@ -44,12 +44,14 @@ class SmartParser:
         # Device Identification
         disk.model = (
             data.get("model_name") or 
+            data.get("scsi_model_name") or 
             data.get("device", {}).get("model_name") or 
+            (f"{data.get('scsi_vendor', '')} {data.get('scsi_product', '')}").strip() or 
             data.get("model_family") or 
             "Generic Drive"
         ).strip()
-        disk.serial = data.get("serial_number", "N/A").strip()
-        disk.firmware = data.get("firmware_version", "N/A").strip()
+        disk.serial = (data.get("serial_number") or data.get("scsi_serial_number") or "N/A").strip()
+        disk.firmware = (data.get("firmware_version") or data.get("scsi_revision") or "N/A").strip()
 
         # Capacity
         user_cap = data.get("user_capacity", {})
@@ -94,8 +96,10 @@ class SmartParser:
     @classmethod
     def _extract_telemetry(cls, data: Dict[str, Any], disk: DiskInfo):
         temp_dict = data.get("temperature", {})
-        if "current" in temp_dict:
+        if "current" in temp_dict and int(temp_dict["current"]) > 0:
             disk.temperature_c = int(temp_dict["current"])
+        else:
+            disk.temperature_c = None
         
         power_time = data.get("power_on_time", {})
         if "hours" in power_time:
@@ -309,3 +313,18 @@ class SmartParser:
         else:
             disk.health_status = HealthStatus.UNKNOWN
             disk.health_summary = "SMART telemetry not available"
+
+        if not disk.attributes and passed is not None:
+            disk.attributes = [
+                SmartAttribute(
+                    id=1,
+                    name="SMART Overall Health Status",
+                    current="PASSED" if passed else "FAILED",
+                    worst="PASSED",
+                    threshold="PASSED",
+                    raw="0" if passed else "1",
+                    status="OK" if passed else "FAIL",
+                    status_type=HealthStatus.HEALTHY if passed else HealthStatus.FAILED,
+                    description="Device/Bridge SMART overall self-test health assessment"
+                )
+            ]

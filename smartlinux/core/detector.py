@@ -97,6 +97,8 @@ class LocalDiskDetector:
 
                         model = dev.get("model") or "Physical Drive"
                         size_str = dev.get("size") or "Unknown"
+                        if size_str in ("0B", "0", ""):
+                            continue
                         tran = (dev.get("tran") or "").upper()
                         is_rm = dev.get("rm") in (True, "1", 1) or dev.get("hotplug") in (True, "1", 1) or (tran == "USB")
 
@@ -142,39 +144,81 @@ class LocalDiskDetector:
         return drives
 
     @classmethod
+    def check_is_usb(cls, device_path: str) -> bool:
+        """Checks whether a block device is connected via USB bus."""
+        dev_name = device_path.split("/")[-1]
+        sys_block_path = f"/sys/block/{dev_name}"
+        if os.path.exists(sys_block_path):
+            try:
+                real = os.path.realpath(sys_block_path).lower()
+                return "usb" in real
+            except Exception:
+                pass
+        return False
+
+    @classmethod
     def read_drive_smart(cls, device_path: str) -> DiskInfo:
-        """Reads and parses full SMART data for a specific local drive."""
+        """Reads and parses full SMART data for a specific local drive with intelligent bridge fallback."""
         smartctl_bin = cls.get_smartctl_bin()
-        try:
-            cmd = [smartctl_bin, "-j", "-a", device_path]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            
-            if proc.stdout:
-                try:
-                    data = json.loads(proc.stdout)
-                    disk = SmartParser.parse_smart_json(data, device_path)
-                    return disk
-                except json.JSONDecodeError:
-                    pass
+        device_types = [None, "scsi", "sat,auto", "sntrealtek", "sntjmicron", "sntasmedia", "usbjmicron", "usbsunplus"]
+        is_usb = cls.check_is_usb(device_path)
+        
+        last_error = ""
+        best_disk = None
 
-            disk = DiskInfo(
-                device_path=device_path,
-                name=device_path.split("/")[-1],
-                health_status=HealthStatus.FAILED,
-                health_summary="Error decoding smartctl output",
-                error_message=proc.stderr.strip() or "Empty or invalid output"
-            )
-            return disk
+        for dev_type in device_types:
+            try:
+                cmd = [smartctl_bin, "-j"]
+                if dev_type:
+                    cmd.extend(["-d", dev_type])
+                cmd.extend(["-a", device_path])
+                
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+                if proc.stdout:
+                    try:
+                        data = json.loads(proc.stdout)
+                        has_smart = (
+                            "smart_status" in data or 
+                            "ata_smart_attributes" in data or 
+                            "nvme_smart_health_information_log" in data
+                        )
+                        has_identity = (
+                            "model_name" in data or 
+                            "scsi_product" in data or 
+                            "user_capacity" in data or
+                            "serial_number" in data
+                        )
 
-        except Exception as e:
-            disk = DiskInfo(
-                device_path=device_path,
-                name=device_path.split("/")[-1],
-                health_status=HealthStatus.UNKNOWN,
-                health_summary="Error executing smartctl",
-                error_message=str(e)
-            )
-            return disk
+                        if has_smart or has_identity:
+                            disk = SmartParser.parse_smart_json(data, device_path)
+                            if is_usb:
+                                disk.is_usb = True
+                            if disk.health_status != HealthStatus.UNKNOWN and disk.size_bytes > 0:
+                                return disk
+                            if best_disk is None or (disk.size_bytes > 0 and best_disk.size_bytes == 0):
+                                best_disk = disk
+                    except json.JSONDecodeError:
+                        pass
+                
+                if proc.stderr:
+                    last_error = proc.stderr.strip()
+            except Exception as e:
+                last_error = str(e)
+
+        if best_disk and (best_disk.size_bytes > 0 or best_disk.model != "Generic Drive"):
+            if is_usb:
+                best_disk.is_usb = True
+            return best_disk
+
+        disk = DiskInfo(
+            device_path=device_path,
+            name=device_path.split("/")[-1],
+            is_usb=is_usb,
+            health_status=HealthStatus.UNKNOWN,
+            health_summary="SMART telemetry not available",
+            error_message=last_error or "Unsupported device bridge or command failed"
+        )
+        return disk
 
     @classmethod
     def eject_drive(cls, device_path: str) -> Tuple[bool, str]:

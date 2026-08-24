@@ -222,7 +222,8 @@ class DetailPanel(QWidget):
             if not disk.attributes:
                 self.temp_card.update_data("---", "Click 'Scan Now'")
             else:
-                self.temp_card.update_data("N/A", "No SMART thermal sensor")
+                sub = "Not supported by USB bridge" if disk.is_usb else "No SMART thermal sensor"
+                self.temp_card.update_data("N/A", sub)
 
         if disk.power_on_hours is not None:
             hours = disk.power_on_hours
@@ -238,7 +239,8 @@ class DetailPanel(QWidget):
             if not disk.attributes:
                 self.hours_card.update_data("---", "Click 'Scan Now'")
             else:
-                self.hours_card.update_data("N/A", "Not available")
+                sub = "Not supported by USB bridge" if disk.is_usb else "Not available"
+                self.hours_card.update_data("N/A", sub)
 
         if disk.power_cycles is not None:
             self.cycles_card.update_data(f"{disk.power_cycles:,}", "Recorded power-on cycles")
@@ -246,7 +248,8 @@ class DetailPanel(QWidget):
             if not disk.attributes:
                 self.cycles_card.update_data("---", "Click 'Scan Now'")
             else:
-                self.cycles_card.update_data("N/A", "Not available")
+                sub = "Not supported by USB bridge" if disk.is_usb else "Not available"
+                self.cycles_card.update_data("N/A", sub)
 
         # Table
         self._populate_table(disk)

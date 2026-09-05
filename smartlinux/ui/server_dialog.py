@@ -61,11 +61,11 @@ class ServerDialog(QDialog):
         form.setSpacing(12)
 
         self.name_input = QLineEdit()
-        self.name_input.setPlaceholderText("e.g. NodCasa, i7server, Proxmox")
+        self.name_input.setPlaceholderText("e.g. Storage-Node, Backup-Server, Proxmox-VE")
         form.addRow("Server Name:", self.name_input)
 
         self.host_input = QLineEdit()
-        self.host_input.setPlaceholderText("e.g. 192.168.1.50 or homelab.local")
+        self.host_input.setPlaceholderText("e.g. 192.168.1.100 or server.local")
         form.addRow("IP / Hostname:", self.host_input)
 
         self.port_input = QSpinBox()

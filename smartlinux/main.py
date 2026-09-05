@@ -18,7 +18,7 @@ def main():
     # Critical for GNOME / Ubuntu Dock / Wayland window grouping & icon recognition
     app.setApplicationName("smartlinux")
     app.setApplicationDisplayName("SmartLinux - S.M.A.R.T. Health Diagnostics")
-    app.setOrganizationName("Homelab")
+    app.setOrganizationName("SmartLinux")
     QGuiApplication.setDesktopFileName("smartlinux")
 
     # Load Application Icon

@@ -23,11 +23,23 @@ rsync -a --delete --exclude=".git" --exclude="__pycache__" "$SOURCE_DIR/" "$OPT_
 chown -R root:root "$OPT_DIR"
 chmod -R 755 "$OPT_DIR"
 
-# 2. Deploy binary wrapper
+# 2. Setup Python virtual environment if missing
+if [ ! -d "$OPT_DIR/.venv" ]; then
+    echo "📦 Setting up Python virtual environment in $OPT_DIR/.venv..."
+    python3 -m venv "$OPT_DIR/.venv"
+    "$OPT_DIR/.venv/bin/pip" install --upgrade pip --quiet
+    "$OPT_DIR/.venv/bin/pip" install -r "$OPT_DIR/requirements.txt" --quiet
+fi
+
+# 3. Deploy binary wrapper
 cat << 'EOF' > "$BIN_FILE"
 #!/usr/bin/env bash
 cd /opt/smartlinux
-exec /opt/smartlinux/.venv/bin/python3 -m smartlinux.main "$@"
+if [ -x /opt/smartlinux/.venv/bin/python3 ]; then
+    exec /opt/smartlinux/.venv/bin/python3 -m smartlinux.main "$@"
+else
+    exec python3 -m smartlinux.main "$@"
+fi
 EOF
 chmod 755 "$BIN_FILE"
 

@@ -71,10 +71,32 @@ brew install python smartmontools
 To allow SmartLinux to read local raw disk health without prompting for root passwords on every startup, set the SUID bit on `smartctl`:
 
 ```bash
+# Ubuntu / Debian / Fedora / Pop!_OS:
 sudo chmod u+s /usr/sbin/smartctl
+
+# Arch Linux / Omarchy / Manjaro:
+sudo chmod u+s /usr/bin/smartctl
 ```
 
-*(On systems where `smartctl` is in `/usr/local/sbin/smartctl`, adjust the path accordingly).*
+*(Alternatively, let SmartLinux's built-in 1-click auto-setup modal handle this automatically upon initial launch).*
+
+---
+
+## 🪟 Tiling Window Managers (Hyprland / Omarchy / Sway)
+
+SmartLinux features a high-density diagnostic dashboard layout designed for a native window size of `1180x750`. To prevent tiling window managers from auto-tiling or stretching the dashboard across ultra-wide monitors, add a floating rule:
+
+### Omarchy (`~/.config/hypr/hyprland.lua`):
+```lua
+o.window("smartlinux", { float = true, center = true, size = { 1180, 750 } })
+```
+
+### Standard Hyprland (`~/.config/hypr/hyprland.conf`):
+```conf
+windowrulev2 = float, class:^(smartlinux)$
+windowrulev2 = size 1180 750, class:^(smartlinux)$
+windowrulev2 = center, class:^(smartlinux)$
+```
 
 ---
 

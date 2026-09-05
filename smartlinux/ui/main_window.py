@@ -138,7 +138,7 @@ class MainWindow(QMainWindow):
 
     def _start_hotplug_watcher(self):
         try:
-            self._hotplug_watcher = DeviceHotplugWatcher(self)
+            self._hotplug_watcher = DeviceHotplugWatcher()
             self._hotplug_watcher.device_changed.connect(self._on_hotplug_event)
             self._hotplug_watcher.start()
         except Exception as e:
@@ -394,13 +394,13 @@ class MainWindow(QMainWindow):
         if self._hotplug_watcher:
             try:
                 self._hotplug_watcher.stop()
-                self._hotplug_watcher.wait(400)
+                self._hotplug_watcher.wait(2000)
             except Exception:
                 pass
         for worker in list(self._active_workers):
             try:
                 worker.quit()
-                worker.wait(400)
+                worker.wait(2000)
             except Exception:
                 pass
         super().closeEvent(event)

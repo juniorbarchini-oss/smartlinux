@@ -32,8 +32,8 @@ class DeviceHotplugWatcher(QThread):
             self._socket.setblocking(False)
 
             while self._running:
-                # Wait for data with 1-second timeout to allow clean shutdown
-                r, _, _ = select.select([self._socket], [], [], 1.0)
+                # Wait for data with 0.2-second timeout to allow instant clean shutdown
+                r, _, _ = select.select([self._socket], [], [], 0.2)
                 if not self._running:
                     break
                 if r:
@@ -58,7 +58,7 @@ class DeviceHotplugWatcher(QThread):
     def _run_fallback(self):
         # Fallback watcher for non-Linux OS
         while self._running:
-            self.msleep(2000)
+            self.msleep(200)
 
     def stop(self):
         self._running = False

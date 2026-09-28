@@ -163,47 +163,43 @@ class TestAnsibleSmartCheck(unittest.TestCase):
         self.assertTrue(any("media and data integrity errors" in r.lower() for r in result["reasons"]))
 
     @patch("urllib.request.urlopen")
-    def test_discord_alert_on_warning(self, mock_urlopen):
+    def test_ntfy_alert_on_warning(self, mock_urlopen):
         mock_resp = MagicMock()
-        mock_resp.status = 204
+        mock_resp.status = 200
         mock_urlopen.return_value.__enter__.return_value = mock_resp
 
         result = asc.evaluate_smart_data(self.ata_warning_json, "/dev/sdc")
-        ok, msg = asc.send_discord_alert("https://discord.com/api/webhooks/mock/123", result, "i7server")
+        ok, msg = asc.send_ntfy_alert("http://i7server:8880/smart-alerts", result, "i7server")
 
         self.assertTrue(ok)
         self.assertIn("sent successfully", msg)
         self.assertTrue(mock_urlopen.called)
 
-        # Inspect request payload
+        # Inspect request headers/body
         req = mock_urlopen.call_args[0][0]
-        payload = json.loads(req.data.decode("utf-8"))
-        embed = payload["embeds"][0]
-        self.assertEqual(embed["color"], 0xF59E0B)  # Amber for warning
-        self.assertIn("WARNING", embed["title"])
-        self.assertIn("i7server", embed["title"])
+        self.assertEqual(req.get_header("Priority"), "high")
+        self.assertIn("WARNING", req.get_header("Title"))
+        self.assertIn("i7server", req.get_header("Title"))
 
     @patch("urllib.request.urlopen")
-    def test_discord_alert_on_failed(self, mock_urlopen):
+    def test_ntfy_alert_on_failed(self, mock_urlopen):
         mock_resp = MagicMock()
-        mock_resp.status = 204
+        mock_resp.status = 200
         mock_urlopen.return_value.__enter__.return_value = mock_resp
 
         result = asc.evaluate_smart_data(self.ata_failed_json, "/dev/sdd")
-        ok, msg = asc.send_discord_alert("https://discord.com/api/webhooks/mock/123", result, "i7server")
+        ok, msg = asc.send_ntfy_alert("http://i7server:8880/smart-alerts", result, "i7server")
 
         self.assertTrue(ok)
         self.assertTrue(mock_urlopen.called)
 
         req = mock_urlopen.call_args[0][0]
-        payload = json.loads(req.data.decode("utf-8"))
-        embed = payload["embeds"][0]
-        self.assertEqual(embed["color"], 0xEF4444)  # Red for failed
-        self.assertIn("CRITICAL FAILURE", embed["title"])
+        self.assertEqual(req.get_header("Priority"), "urgent")
+        self.assertIn("CRITICAL FAILURE", req.get_header("Title"))
 
-    def test_discord_alert_no_url(self):
+    def test_ntfy_alert_no_url(self):
         result = asc.evaluate_smart_data(self.ata_warning_json, "/dev/sdc")
-        ok, msg = asc.send_discord_alert("", result, "i7server")
+        ok, msg = asc.send_ntfy_alert("", result, "i7server")
         self.assertFalse(ok)
         self.assertIn("not configured", msg)
 

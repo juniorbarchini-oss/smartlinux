@@ -9,17 +9,20 @@ without PySide6, paramiko, or any GUI modules.
 CLI Usage:
     python3 ansible_smart_check.py /dev/sdX
     python3 ansible_smart_check.py /dev/nvme0n1
-    python3 ansible_smart_check.py --device /dev/sdc --webhook-url https://discord.com/api/webhooks/...
+    python3 ansible_smart_check.py --device /dev/sdc --ntfy-url http://i7server:8880/smart-alerts
 
 Exit Codes (for Ansible tasks / playbooks):
     0 = HEALTHY (All parameters normal)
     1 = WARNING (Pending/reallocated sectors, wear >= 95%, spare <= threshold, etc.)
     2 = FAILED  (Critical trip, uncorrectable errors, missing drive, or read error)
 
-Discord Webhook (Item 5.4):
-    If the result is WARNING or FAILED, sends a rich embed to DISCORD_WEBHOOK_URL
-    using standard library urllib.request (zero third-party dependencies).
-    If HEALTHY, no notification is sent.
+ntfy Alert (Item 5.4):
+    If the result is WARNING or FAILED, sends a push notification to NTFY_URL
+    (a self-hosted ntfy topic URL, e.g. http://i7server:8880/smart-alerts) using
+    standard library urllib.request (zero third-party dependencies). Chosen over
+    a Discord embed because it reaches the phone directly and doesn't get lost
+    among unrelated channel noise; daily/periodic reports still go to Discord
+    via the existing separate report script. If HEALTHY, no notification is sent.
 """
 
 import argparse
@@ -310,83 +313,68 @@ def evaluate_smart_data(data: Dict[str, Any], device_path: str) -> Dict[str, Any
     }
 
 
-def send_discord_alert(webhook_url: str, result: Dict[str, Any], host: str) -> Tuple[bool, str]:
+def send_ntfy_alert(ntfy_url: str, result: Dict[str, Any], host: str) -> Tuple[bool, str]:
     """
-    Sends a rich Discord embed alert for WARNING or FAILED status via urllib.request.
-    Zero external dependencies (does not require requests).
+    Sends a push notification for WARNING or FAILED status to a self-hosted
+    ntfy topic URL (e.g. http://i7server:8880/smart-alerts) via urllib.request.
+    Zero external dependencies (does not require the 'requests' library).
     """
-    if not webhook_url:
-        return False, "DISCORD_WEBHOOK_URL is not configured."
+    if not ntfy_url:
+        return False, "NTFY_URL is not configured."
 
     is_failed = result["exit_code"] == EXIT_FAILED
-    color = 0xEF4444 if is_failed else 0xF59E0B  # Red or Amber
-    status_icon = "🔴🚨" if is_failed else "⚠️"
+    priority = "urgent" if is_failed else "high"
+    tags = "rotating_light,floppy_disk" if is_failed else "warning,floppy_disk"
     status_text = "CRITICAL FAILURE" if is_failed else "WARNING"
-    title = f"{status_icon} S.M.A.R.T. {status_text}: {host} ({result['device']})"
+    title = f"S.M.A.R.T. {status_text}: {host} ({result['device']})"
 
-    fields = [
-        {"name": "Host", "value": f"`{host}`", "inline": True},
-        {"name": "Device", "value": f"`{result['device']}`", "inline": True},
-        {"name": "Status", "value": f"**{result['health_status']}**", "inline": True},
-        {"name": "Model", "value": result["model"], "inline": True},
-        {"name": "Serial", "value": f"`{result['serial']}`", "inline": True},
-        {"name": "Protocol", "value": f"{result['protocol']} ({result['size_human']})", "inline": True},
+    lines = [
+        f"Model: {result['model']}  |  Serial: {result['serial']}",
+        f"Protocol: {result['protocol']} ({result['size_human']})",
     ]
-
     telemetry_parts = []
     if result["temperature_c"] is not None:
         telemetry_parts.append(f"{result['temperature_c']} °C")
     if result["power_on_hours"] is not None:
         telemetry_parts.append(f"{result['power_on_hours']:,} hrs")
     if telemetry_parts:
-        fields.append({"name": "Telemetry", "value": " | ".join(telemetry_parts), "inline": True})
+        lines.append("Telemetry: " + " | ".join(telemetry_parts))
 
     if result["reasons"]:
-        anomalies = "\n".join(f"• {r}" for r in result["reasons"][:10])
-        fields.append({"name": "Anomalies Detected", "value": anomalies, "inline": False})
+        lines.append("Anomalies:")
+        lines.extend(f"  • {r}" for r in result["reasons"][:10])
     else:
-        fields.append({"name": "Summary", "value": result["summary"], "inline": False})
+        lines.append(f"Summary: {result['summary']}")
 
-    payload = {
-        "username": "SmartLinux Ansible Monitor",
-        "embeds": [
-            {
-                "title": title,
-                "description": f"Automated S.M.A.R.T. health check detected disk issues on **{host}**.",
-                "color": color,
-                "fields": fields,
-                "footer": {"text": "SmartLinux Ansible Storage Diagnostic"},
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
-            }
-        ]
-    }
+    body = "\n".join(lines).encode("utf-8")
 
     try:
-        req_data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            webhook_url,
-            data=req_data,
+            ntfy_url,
+            data=body,
             headers={
-                "Content-Type": "application/json",
+                "Title": title,
+                "Priority": priority,
+                "Tags": tags,
                 "User-Agent": "SmartLinux-Ansible/1.0"
             },
             method="POST"
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status in (200, 204):
-                return True, "Discord notification sent successfully."
-            return False, f"Discord webhook returned unexpected HTTP {resp.status}."
+                return True, "ntfy notification sent successfully."
+            return False, f"ntfy server returned unexpected HTTP {resp.status}."
     except urllib.error.HTTPError as e:
-        return False, f"Discord webhook HTTP error: {e.code} - {e.reason}"
+        return False, f"ntfy HTTP error: {e.code} - {e.reason}"
     except urllib.error.URLError as e:
-        return False, f"Discord webhook connection error: {e.reason}"
+        return False, f"ntfy connection error: {e.reason}"
     except Exception as e:
-        return False, f"Discord webhook failed: {str(e)}"
+        return False, f"ntfy notification failed: {str(e)}"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Standalone S.M.A.R.T. Health Check for Ansible with Discord alert notifications."
+        description="Standalone S.M.A.R.T. Health Check for Ansible with ntfy push-alert notifications."
     )
     parser.add_argument(
         "device",
@@ -409,10 +397,10 @@ def parse_args() -> argparse.Namespace:
         help="Optional smartctl device type override (e.g. sat, scsi, nvme)"
     )
     parser.add_argument(
-        "--webhook-url",
-        dest="webhook_url",
+        "--ntfy-url",
+        dest="ntfy_url",
         default=None,
-        help="Discord Webhook URL for alerts (defaults to DISCORD_WEBHOOK_URL env var)"
+        help="ntfy topic URL for alerts, e.g. http://i7server:8880/smart-alerts (defaults to NTFY_URL env var)"
     )
     parser.add_argument(
         "--json",
@@ -452,9 +440,9 @@ def main() -> int:
         _, smart_data, err_msg = run_smartctl(device_path, args.device_type)
         if not smart_data:
             sys.stderr.write(f"Error checking {device_path}: {err_msg}\n")
-            # Attempt to send critical failure notification to Discord if configured
-            webhook_url = args.webhook_url or os.environ.get("DISCORD_WEBHOOK_URL")
-            if webhook_url:
+            # Attempt to send critical failure notification to ntfy if configured
+            ntfy_url = args.ntfy_url or os.environ.get("NTFY_URL")
+            if ntfy_url:
                 failure_result = {
                     "device": device_path,
                     "model": "Unknown",
@@ -468,24 +456,24 @@ def main() -> int:
                     "summary": f"Failed to execute smartctl: {err_msg}",
                     "reasons": [err_msg]
                 }
-                send_discord_alert(webhook_url, failure_result, hostname)
+                send_ntfy_alert(ntfy_url, failure_result, hostname)
             return EXIT_FAILED
 
     # Evaluate health
     result = evaluate_smart_data(smart_data, device_path)
 
-    # Discord alert (5.4) for WARNING or FAILED
-    discord_status = "Not applicable (HEALTHY)"
+    # ntfy alert (5.4) for WARNING or FAILED
+    ntfy_status = "Not applicable (HEALTHY)"
     if result["exit_code"] in (EXIT_WARNING, EXIT_FAILED):
-        webhook_url = args.webhook_url or os.environ.get("DISCORD_WEBHOOK_URL")
-        if webhook_url:
-            ok, msg = send_discord_alert(webhook_url, result, hostname)
-            discord_status = msg if ok else f"Error: {msg}"
+        ntfy_url = args.ntfy_url or os.environ.get("NTFY_URL")
+        if ntfy_url:
+            ok, msg = send_ntfy_alert(ntfy_url, result, hostname)
+            ntfy_status = msg if ok else f"Error: {msg}"
         else:
-            discord_status = "Skipped (DISCORD_WEBHOOK_URL environment variable not set)"
-            sys.stderr.write("[Notice] DISCORD_WEBHOOK_URL not configured; skipping Discord alert.\n")
+            ntfy_status = "Skipped (NTFY_URL environment variable not set)"
+            sys.stderr.write("[Notice] NTFY_URL not configured; skipping ntfy alert.\n")
 
-    result["discord_notification"] = discord_status
+    result["ntfy_notification"] = ntfy_status
     result["host"] = hostname
 
     # Output formatting
@@ -514,7 +502,7 @@ def main() -> int:
             for r in result["reasons"]:
                 print(f"  • {r}")
         if result["exit_code"] != EXIT_HEALTHY:
-            print(f"Discord:     {discord_status}")
+            print(f"ntfy:        {ntfy_status}")
         print(border)
 
     return result["exit_code"]

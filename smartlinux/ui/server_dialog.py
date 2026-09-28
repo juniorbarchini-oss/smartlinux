@@ -11,7 +11,7 @@ from ..core.ssh_client import RemoteSSHClient
 
 
 class TestSSHThread(QThread):
-    result_ready = Signal(bool, str)
+    result_ready = Signal(bool, str, object)
 
     def __init__(self, config: ServerConfig):
         super().__init__()
@@ -22,9 +22,9 @@ class TestSSHThread(QThread):
         ok, msg = client.connect(timeout=6)
         if ok:
             client.disconnect()
-            self.result_ready.emit(True, "SSH connection verified successfully!")
+            self.result_ready.emit(True, "SSH connection verified successfully!", None)
         else:
-            self.result_ready.emit(False, msg)
+            self.result_ready.emit(False, msg, client)
 
 
 class ServerDialog(QDialog):
@@ -231,15 +231,46 @@ class ServerDialog(QDialog):
         self.test_thread.result_ready.connect(self._on_test_result)
         self.test_thread.start()
 
-    def _on_test_result(self, ok: bool, msg: str):
+    def _on_test_result(self, ok: bool, msg: str, client: Optional[RemoteSSHClient] = None):
         self.test_btn.setEnabled(True)
         self.test_btn.setText("🔍 Test Connection")
         if ok:
             self.test_status_label.setStyleSheet("color: #3fb950; font-weight: bold; font-size: 13px;")
             self.test_status_label.setText(f"✓ {msg}")
         else:
+            first_line = msg.splitlines()[0]
             self.test_status_label.setStyleSheet("color: #f85149; font-size: 13px;")
-            self.test_status_label.setText(f"✗ {msg}")
+            self.test_status_label.setText(f"✗ {first_line}")
+
+            # Show VISIBLE modal alert for security / verification rejections
+            if "SECURITY ALERT" in msg or "Host Key Mismatch" in msg:
+                QMessageBox.critical(
+                    self,
+                    "SSH Security Alert: Host Key Mismatch",
+                    f"{msg}\n\nSmartLinux blocked the connection to prevent credential theft or MITM attacks."
+                )
+            elif client and client.last_untrusted_host_key:
+                host, key = client.last_untrusted_host_key
+                fp = ":".join(f"{b:02x}" for b in key.get_fingerprint())
+                reply = QMessageBox.question(
+                    self,
+                    "Trust Remote Host Key?",
+                    f"Host key for '{host}' is not present in ~/.ssh/known_hosts.\n\n"
+                    f"Key Type: {key.get_name()}\n"
+                    f"Fingerprint: {fp}\n\n"
+                    f"Do you want to trust this host and save its key to ~/.ssh/known_hosts?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    if RemoteSSHClient.trust_and_save_host_key(host, key):
+                        self.test_status_label.setStyleSheet("color: #58a6ff; font-size: 13px;")
+                        self.test_status_label.setText("✓ Host key saved to known_hosts. Retesting...")
+                        self._test_connection()
+                    else:
+                        QMessageBox.warning(self, "Error", "Failed to save host key to ~/.ssh/known_hosts.")
+            else:
+                QMessageBox.warning(self, "Connection Test Failed", msg)
 
     def _load_config(self, cfg: ServerConfig):
         self.name_input.setText(cfg.name)

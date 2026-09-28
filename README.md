@@ -28,6 +28,14 @@ Designed with an **on-demand philosophy**, SmartLinux avoids unnecessary drive s
   * **📕 PDF Document (`.pdf`):** Styled high-DPI report with telemetry metric boxes and colored status badges.
   * **📘 Word Document (`.doc`):** Formatted Microsoft Word / LibreOffice Writer report.
   * **📊 Excel Spreadsheet (`.xls`):** Multi-sheet Excel workbook with per-attribute columns.
+* **📈 On-Demand S.M.A.R.T. History Log:**  
+  Persists health snapshots on every manual scan into a lightweight, non-database JSON Lines file (`~/.local/share/smartlinux/history.jsonl`). An interactive **Historial** tab computes delta comparisons against previous scans, instantly flagging worsening sectors or error counts in red.
+* **🩺 Native Drive Self-Test (Short & Long):**  
+  Trigger internal drive self-tests (`smartctl -t short` or `-t long`) directly from the diagnostic panel for both local and remote SSH drives, with asynchronous background polling and human-readable completion timing ("X hours/days ago").
+* **🛡️ Hardened SSH Security & System Keyring:**  
+  Replaces permissive auto-add policies with strict `known_hosts` cryptographic verification, protecting Homelab hosts from Man-in-the-Middle (MITM) attacks with interactive fingerprint approval modals. SSH passwords are saved securely in the system keyring (`gnome-keyring` / SecretService) with defensive `0600` / `0700` file permissions.
+* **🤖 Standalone Ansible & ntfy Monitor:**  
+  Includes `scripts/ansible_smart_check.py`, a standalone zero-dependency Python script designed for headless automation (e.g. Ansible / Semaphore). Evaluates exact ATA/NVMe thresholds and fires immediate push alerts to a self-hosted **ntfy** instance (`NTFY_URL`) on WARNING or FAILED status.
 * **🎨 Modern High-Contrast Dark UI:**  
   Crisp typography (+15px readable scale), responsive telemetry cards (Temperature, Power-On Hours, Power Cycles), and full ATA / NVMe SMART attribute tables.
 * **🪄 1-Click Dependency Auto-Configuration:**  
@@ -133,21 +141,25 @@ The compiled standalone binary will be generated in `dist/SmartLinux/`.
 
 ```text
 smartlinux/
+├── scripts/
+│   └── ansible_smart_check.py  # Standalone headless SMART monitor with ntfy push alerts
 ├── smartlinux/
 │   ├── core/
 │   │   ├── models.py           # Data models (DiskInfo, SmartAttribute, ServerConfig)
 │   │   ├── detector.py         # Local disk discovery and safe ejection
-│   │   ├── smart_parser.py     # ATA/SATA and NVMe SMART JSON parser
-│   │   ├── ssh_client.py       # Cross-platform SSH client with sudo elevation
+│   │   ├── history_manager.py  # On-demand JSON Lines health snapshot log (~/.local/share/)
+│   │   ├── smart_parser.py     # ATA/SATA and NVMe SMART JSON parser & threshold evaluator
+│   │   ├── ssh_client.py       # Hardened SSH client with strict known_hosts verification
 │   │   ├── watcher.py          # Netlink kernel uevent hotplug watcher
 │   │   ├── exporter.py         # Multi-format report exporter (.md, .pdf, .doc, .xls)
-│   │   └── config_manager.py   # Server persistence (~/.config/smartlinux/)
+│   │   └── config_manager.py   # Secure server persistence with system keyring integration
 │   ├── ui/
 │   │   ├── theme.py            # Dark theme stylesheet (QSS)
 │   │   ├── main_window.py      # Main window & background worker orchestration
 │   │   ├── sidebar.py          # Device tree with health badges and context menus
-│   │   ├── detail_panel.py     # Telemetry metric cards and attribute table
-│   │   ├── server_dialog.py    # Remote SSH server configuration modal
+│   │   ├── detail_panel.py     # Telemetry metric cards, self-test actions and attribute table
+│   │   ├── history_tab.py      # Historical SMART attribute delta and degradation viewer
+│   │   ├── server_dialog.py    # Remote SSH server configuration & host key approval modal
 │   │   ├── export_dialog.py    # Multi-disk and multi-format export dialog
 │   │   └── setup_dialog.py     # 1-click dependency & SUID installer modal
 │   ├── assets/
@@ -155,11 +167,14 @@ smartlinux/
 │   │   └── icon.png            # High-resolution raster application icon
 │   ├── __init__.py
 │   └── main.py                 # Application entry point
+├── tests/
+│   ├── test_security.py        # Automated tests for known_hosts, keyring, and permissions
+│   └── test_ansible_smart_check.py # Automated tests for ATA/NVMe thresholds and ntfy alerts
 ├── smartlinux.sh               # One-click launcher script
 ├── install.sh                  # System desktop & icon installer
 ├── build_portable.sh           # Standalone binary compiler (PyInstaller)
 ├── smartlinux.desktop          # Linux desktop entry specification
-├── requirements.txt            # Python dependencies (PySide6, paramiko)
+├── requirements.txt            # Python dependencies (PySide6, paramiko, keyring)
 └── README.md                   # Documentation
 ```
 

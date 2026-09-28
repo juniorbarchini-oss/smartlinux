@@ -168,8 +168,10 @@ class SidebarWidget(QWidget):
 
                 if error:
                     err_item = QTreeWidgetItem(srv_item)
-                    err_item.setText(0, f"  ⚠️ {error}")
-                    err_item.setData(0, Qt.UserRole, {"type": "error", "server_id": server_id})
+                    first_line = error.splitlines()[0]
+                    err_item.setText(0, f"  ⚠️ {first_line}")
+                    err_item.setToolTip(0, error)
+                    err_item.setData(0, Qt.UserRole, {"type": "error", "server_id": server_id, "error_msg": error})
                     return
 
                 if not drives:
@@ -212,6 +214,12 @@ class SidebarWidget(QWidget):
             server_id = data.get("server_id")
             if server_id:
                 self.server_refresh_requested.emit(server_id)
+        elif item_type == "error":
+            error_msg = data.get("error_msg", "Unknown connection error.")
+            server_id = data.get("server_id")
+            srv = self._servers.get(server_id)
+            srv_name = srv.name if srv else "Remote Host"
+            QMessageBox.warning(self, f"Connection Alert: {srv_name}", error_msg)
 
     def _show_context_menu(self, pos):
         item = self.tree.itemAt(pos)
@@ -231,11 +239,17 @@ class SidebarWidget(QWidget):
                 return
 
             act_refresh = menu.addAction("↻ Reload Server Drives")
+            act_details = None
+            if item_type == "error":
+                act_details = menu.addAction("ℹ️ View Error Details")
             act_remove = menu.addAction("🗑️ Remove Server")
 
             action = menu.exec(self.tree.viewport().mapToGlobal(pos))
             if action == act_refresh:
                 self.server_refresh_requested.emit(server_id)
+            elif act_details and action == act_details:
+                error_msg = data.get("error_msg", "Unknown error.")
+                QMessageBox.warning(self, f"Connection Alert: {srv.name}", error_msg)
             elif action == act_remove:
                 reply = QMessageBox.question(
                     self,

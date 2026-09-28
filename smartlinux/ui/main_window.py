@@ -263,12 +263,12 @@ class MainWindow(QMainWindow):
 
     def _do_discover_remote_drives(self, srv: ServerConfig) -> List[DiskInfo]:
         client = RemoteSSHClient(srv)
+        self._ssh_clients[srv.id] = client
         ok, msg = client.connect(timeout=8)
         if not ok:
             raise Exception(msg)
 
         drives = client.discover_remote_drives()
-        self._ssh_clients[srv.id] = client
         return drives
 
     def _on_remote_drives_discovered(self, server_id: str, drives: List[DiskInfo]):
@@ -281,7 +281,51 @@ class MainWindow(QMainWindow):
 
     def _on_remote_server_error(self, server_id: str, error_msg: str):
         self.sidebar.set_server_drives(server_id, [], error=error_msg)
-        self.status_bar.showMessage(f"Failed to connect to server: {error_msg}")
+        self.status_bar.showMessage(f"Failed to connect to server: {error_msg.splitlines()[0]}")
+
+        srv = next((s for s in self._active_servers if s.id == server_id), None)
+        srv_name = srv.name if srv else "Server"
+
+        if "SECURITY ALERT" in error_msg or "Host Key Mismatch" in error_msg:
+            QMessageBox.critical(
+                self,
+                f"SSH Security Alert: {srv_name}",
+                f"{error_msg}\n\nSmartLinux aborted the connection to protect against potential credential theft or MITM attacks."
+            )
+        elif "Host Key Not Verified" in error_msg or "known_hosts" in error_msg:
+            client = self._ssh_clients.get(server_id)
+            if client and client.last_untrusted_host_key:
+                host, key = client.last_untrusted_host_key
+                fp = ":".join(f"{b:02x}" for b in key.get_fingerprint())
+                reply = QMessageBox.question(
+                    self,
+                    f"Trust Remote Host Key: {srv_name}?",
+                    f"Host key for '{host}' is not present in ~/.ssh/known_hosts.\n\n"
+                    f"Key Type: {key.get_name()}\n"
+                    f"Fingerprint: {fp}\n\n"
+                    f"Do you want to trust this host and save its key to ~/.ssh/known_hosts?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    if RemoteSSHClient.trust_and_save_host_key(host, key):
+                        self.status_bar.showMessage(f"Host key saved for {srv_name}. Retrying connection...")
+                        self._on_refresh_server(server_id)
+                        return
+                    else:
+                        QMessageBox.warning(self, "Error", "Failed to write key to ~/.ssh/known_hosts.")
+            else:
+                QMessageBox.warning(
+                    self,
+                    f"Host Key Verification Failed: {srv_name}",
+                    f"Connection to '{srv_name}' was blocked by host key verification:\n\n{error_msg}"
+                )
+        else:
+            QMessageBox.warning(
+                self,
+                f"Connection Error: {srv_name}",
+                f"Failed to connect to '{srv_name}':\n\n{error_msg}"
+            )
 
     # ---------------- ON-DEMAND SINGLE DISK SCAN ----------------
 

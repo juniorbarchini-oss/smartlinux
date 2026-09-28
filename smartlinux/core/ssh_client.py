@@ -46,6 +46,34 @@ def is_permission_denied_json(data: Optional[Dict[str, Any]]) -> bool:
     return False
 
 
+class HostKeyUntrustedException(paramiko.SSHException):
+    """Raised when a remote host key is not present in ~/.ssh/known_hosts."""
+    def __init__(self, hostname: str, key: paramiko.PKey):
+        self.hostname = hostname
+        self.key = key
+        self.fingerprint = ":".join(f"{b:02x}" for b in key.get_fingerprint())
+        self.key_type = key.get_name()
+        super().__init__(
+            f"Host key for '{hostname}' is not trusted (not present in ~/.ssh/known_hosts).\n"
+            f"Key Type: {self.key_type}\n"
+            f"Fingerprint: {self.fingerprint}\n\n"
+            f"Verification was rejected to prevent potential Man-in-the-Middle (MITM) attacks."
+        )
+
+
+class StrictKnownHostsPolicy(paramiko.MissingHostKeyPolicy):
+    """
+    Policy that rejects unknown host keys and records the key metadata
+    to allow user notification and explicit confirmation.
+    """
+    def __init__(self, client_ref: "RemoteSSHClient"):
+        self.client_ref = client_ref
+
+    def missing_host_key(self, client, hostname, key):
+        self.client_ref.last_untrusted_host_key = (hostname, key)
+        raise HostKeyUntrustedException(hostname, key)
+
+
 class RemoteSSHClient:
     """
     Generic, platform-agnostic SSH client for monitoring storage diagnostics
@@ -56,11 +84,64 @@ class RemoteSSHClient:
         self.config = config
         self._client: Optional[paramiko.SSHClient] = None
         self._remote_os: Optional[str] = None
+        self.last_untrusted_host_key: Optional[Tuple[str, paramiko.PKey]] = None
+
+    @staticmethod
+    def get_known_hosts_path() -> str:
+        return os.path.expanduser("~/.ssh/known_hosts")
+
+    @classmethod
+    def trust_and_save_host_key(cls, hostname: str, key: paramiko.PKey) -> bool:
+        """Saves a verified host key to ~/.ssh/known_hosts with 0600 permissions."""
+        kh_path = cls.get_known_hosts_path()
+        ssh_dir = os.path.dirname(kh_path)
+        if not os.path.exists(ssh_dir):
+            os.makedirs(ssh_dir, mode=0o700, exist_ok=True)
+            try:
+                os.chmod(ssh_dir, 0o700)
+            except Exception:
+                pass
+
+        host_keys = paramiko.HostKeys()
+        if os.path.exists(kh_path):
+            try:
+                host_keys.load(kh_path)
+            except Exception as e:
+                print(f"Warning: error loading existing known_hosts: {e}")
+
+        host_keys.add(hostname, key.get_name(), key)
+        temp_file = kh_path + f".tmp.{os.getpid()}"
+        try:
+            host_keys.save(temp_file)
+            os.chmod(temp_file, 0o600)
+            os.replace(temp_file, kh_path)
+            os.chmod(kh_path, 0o600)
+            return True
+        except Exception as e:
+            print(f"Error saving host key to {kh_path}: {e}")
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except Exception:
+                    pass
+            return False
 
     def connect(self, timeout: int = 8) -> Tuple[bool, str]:
         self.disconnect()
+        self.last_untrusted_host_key = None
         self._client = paramiko.SSHClient()
-        self._client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        # Load system and user known_hosts
+        self._client.load_system_host_keys()
+        kh_path = self.get_known_hosts_path()
+        if os.path.exists(kh_path):
+            try:
+                self._client.load_host_keys(kh_path)
+            except Exception as e:
+                print(f"Warning loading known_hosts from {kh_path}: {e}")
+
+        # Strict policy: reject unknown host keys instead of silently auto-adding them
+        self._client.set_missing_host_key_policy(StrictKnownHostsPolicy(self))
 
         try:
             connect_kwargs: Dict[str, Any] = {
@@ -94,9 +175,33 @@ class RemoteSSHClient:
             self._client.connect(**connect_kwargs)
             self._detect_os()
             return True, "Connected successfully"
+        except paramiko.BadHostKeyException as e:
+            self.disconnect()
+            fp = ":".join(f"{b:02x}" for b in e.key.get_fingerprint())
+            return False, (
+                f"🚨 SECURITY ALERT: Host Key Mismatch for '{self.config.host}'!\n\n"
+                f"The host key presented by the remote server DOES NOT match the recorded key in ~/.ssh/known_hosts.\n\n"
+                f"Server: {self.config.host}:{self.config.port}\n"
+                f"Key Type: {e.key.get_name()}\n"
+                f"Fingerprint: {fp}\n\n"
+                f"This may indicate a Man-in-the-Middle (MITM) attack or the server host keys have changed.\n"
+                f"SmartLinux has aborted the connection to protect your data."
+            )
+        except HostKeyUntrustedException as e:
+            self.disconnect()
+            return False, (
+                f"🔒 Host Key Not Verified: Server '{self.config.host}' is not present in ~/.ssh/known_hosts.\n\n"
+                f"Key Type: {e.key_type}\n"
+                f"Fingerprint: {e.fingerprint}\n\n"
+                f"To protect against Man-in-the-Middle (MITM) attacks, SmartLinux does not auto-trust unknown hosts. "
+                f"You must verify this fingerprint before trusting it."
+            )
         except paramiko.AuthenticationException:
             self.disconnect()
             return False, "SSH Authentication Error: Invalid username, password, or key."
+        except paramiko.SSHException as e:
+            self.disconnect()
+            return False, f"SSH Error: {str(e)}"
         except Exception as e:
             self.disconnect()
             return False, f"Failed to connect to {self.config.host}:{self.config.port}: {str(e)}"

@@ -2,11 +2,12 @@ from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QFrame,
-    QScrollArea, QSizePolicy
+    QScrollArea, QSizePolicy, QTabWidget, QMenu
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from ..core.models import DiskInfo, HealthStatus
+from .history_tab import HistoryTab
 
 
 class MetricCard(QFrame):
@@ -53,9 +54,10 @@ class MetricCard(QFrame):
 class DetailPanel(QWidget):
     """Right-hand panel showing detailed health, metrics, and SMART attributes."""
 
-    scan_requested = Signal(object)     # Emits current DiskInfo
-    export_requested = Signal(object)   # Emits current DiskInfo
-    eject_requested = Signal(str)       # Emits device_path for local USB drive
+    scan_requested = Signal(object)         # Emits current DiskInfo
+    export_requested = Signal(object)       # Emits current DiskInfo
+    eject_requested = Signal(str)           # Emits device_path for local USB drive
+    self_test_requested = Signal(object, str)  # Emits (DiskInfo, test_type: "short"|"long")
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -63,7 +65,20 @@ class DetailPanel(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        main_layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        self.tabs = QTabWidget()
+        outer_layout.addWidget(self.tabs)
+
+        diagnostics_widget = QWidget()
+        self.tabs.addTab(diagnostics_widget, "Diagnostics")
+
+        self.history_tab = HistoryTab()
+        self.tabs.addTab(self.history_tab, "Historial")
+
+        main_layout = QVBoxLayout(diagnostics_widget)
         main_layout.setContentsMargins(14, 14, 14, 14)
         main_layout.setSpacing(14)
 
@@ -171,6 +186,14 @@ class DetailPanel(QWidget):
         self.export_btn.clicked.connect(self._on_export_clicked)
         action_layout.addWidget(self.export_btn)
 
+        self.self_test_btn = QPushButton("🩺 Self-Test ▾")
+        self.self_test_btn.setEnabled(False)
+        self._self_test_menu = QMenu(self.self_test_btn)
+        self._self_test_menu.addAction("Short (~2 min)", lambda: self._on_self_test_clicked("short"))
+        self._self_test_menu.addAction("Long / Extended (puede tardar horas)", lambda: self._on_self_test_clicked("long"))
+        self.self_test_btn.setMenu(self._self_test_menu)
+        action_layout.addWidget(self.self_test_btn)
+
         self.scan_btn = QPushButton("🔍 Scan Now")
         self.scan_btn.setObjectName("PrimaryButton")
         self.scan_btn.setEnabled(False)
@@ -183,6 +206,7 @@ class DetailPanel(QWidget):
         self.current_disk = disk
         self.scan_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
+        self.self_test_btn.setEnabled(True)
 
         # Eject button visibility
         if disk.is_usb and not disk.is_remote:
@@ -253,6 +277,9 @@ class DetailPanel(QWidget):
 
         # Table
         self._populate_table(disk)
+
+        # History tab (reads local JSONL history for this disk's serial)
+        self.history_tab.load_history(disk)
 
     def _update_health_badge(self, disk: DiskInfo):
         if not disk.attributes and disk.health_status == HealthStatus.UNKNOWN:
@@ -357,3 +384,7 @@ class DetailPanel(QWidget):
     def _on_eject_clicked(self):
         if self.current_disk:
             self.eject_requested.emit(self.current_disk.device_path)
+
+    def _on_self_test_clicked(self, test_type: str):
+        if self.current_disk:
+            self.self_test_requested.emit(self.current_disk, test_type)

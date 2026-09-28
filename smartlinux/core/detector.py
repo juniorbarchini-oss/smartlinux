@@ -221,6 +221,28 @@ class LocalDiskDetector:
         return disk
 
     @classmethod
+    def run_self_test(cls, device_path: str, test_type: str = "short") -> Tuple[bool, str]:
+        """Triggers the drive's own native self-test (smartctl -t short|long).
+
+        Only queues the test on the disk's own controller and returns immediately;
+        it does not wait for completion (a long test can take hours). Results show
+        up in a later 'Scan Now' under the SMART self-test log.
+        """
+        smartctl_bin = cls.get_smartctl_bin()
+        mode = "long" if test_type == "long" else "short"
+        try:
+            proc = subprocess.run(
+                [smartctl_bin, "-t", mode, device_path],
+                capture_output=True, text=True, timeout=15
+            )
+            output = (proc.stdout or "") + (proc.stderr or "")
+            if proc.returncode == 0 or "test has begun" in output.lower():
+                return True, output.strip() or f"Self-test ({mode}) started."
+            return False, output.strip() or f"smartctl exited with code {proc.returncode}"
+        except Exception as e:
+            return False, f"Error starting self-test: {str(e)}"
+
+    @classmethod
     def eject_drive(cls, device_path: str) -> Tuple[bool, str]:
         """
         Safely unmounts and powers off an external removable/USB drive.

@@ -174,6 +174,19 @@ class RemoteSSHClient:
 
         return code, out, err
 
+    def run_self_test(self, device_path: str, test_type: str = "short") -> Tuple[bool, str]:
+        """Triggers the drive's own native self-test (smartctl -t short|long) remotely.
+
+        Only queues the test; does not wait for completion. Results show up in a
+        later scan under the SMART self-test log.
+        """
+        mode = "long" if test_type == "long" else "short"
+        code, out, err = self.exec_smartctl(f"-t {mode} {device_path}", timeout=15)
+        output = (out or "") + (err or "")
+        if code == 0 or "test has begun" in output.lower():
+            return True, output.strip() or f"Self-test ({mode}) started."
+        return False, output.strip() or f"smartctl exited with code {code}"
+
     def discover_remote_drives(self) -> List[DiskInfo]:
         drives: List[DiskInfo] = []
         is_darwin = (self._remote_os == "Darwin")

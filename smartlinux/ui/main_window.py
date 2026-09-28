@@ -1,6 +1,6 @@
 import os
 import subprocess
-from typing import List, Optional, Set, Dict
+from typing import List, Optional, Set, Dict, Tuple
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QLabel, QPushButton, QMessageBox, QFileDialog, QStatusBar
@@ -13,6 +13,7 @@ from ..core.ssh_client import RemoteSSHClient
 from ..core.config_manager import ConfigManager
 from ..core.exporter import ReportExporter
 from ..core.watcher import DeviceHotplugWatcher
+from ..core.history_manager import HistoryManager
 
 from .sidebar import SidebarWidget
 from .detail_panel import DetailPanel
@@ -123,6 +124,7 @@ class MainWindow(QMainWindow):
         self.detail_panel.scan_requested.connect(self._scan_single_disk)
         self.detail_panel.export_requested.connect(self._open_export_dialog)
         self.detail_panel.eject_requested.connect(self._eject_local_disk)
+        self.detail_panel.self_test_requested.connect(self._run_self_test)
         splitter.addWidget(self.detail_panel)
 
         splitter.setStretchFactor(0, 0)
@@ -325,11 +327,60 @@ class MainWindow(QMainWindow):
     def _on_single_disk_scanned(self, updated_disk: DiskInfo):
         key = f"{updated_disk.server_id or 'local'}_{updated_disk.device_path}"
         self._all_known_disks[key] = updated_disk
+        HistoryManager.append_snapshot(updated_disk)
 
         self.detail_panel.display_disk(updated_disk)
         self.sidebar.update_disk_info(updated_disk)
         self.detail_panel.set_loading(False, "SMART read complete.")
         self.status_bar.showMessage(f"Diagnostics complete: {updated_disk.model} [{updated_disk.health_status.label}].")
+
+    # ---------------- NATIVE SELF-TEST (fire-and-forget, checked via a later scan) ----------------
+
+    def _run_self_test(self, disk: DiskInfo, test_type: str):
+        label = "short (~2 min)" if test_type == "short" else "long/extended (can take hours)"
+        self.status_bar.showMessage(f"Starting {label} self-test on {disk.device_path}...")
+        self._start_worker(
+            self._do_run_self_test,
+            on_result=lambda res: self._on_self_test_result(disk, test_type, res),
+            on_error=lambda err: self._on_self_test_error(disk, err),
+            disk=disk,
+            test_type=test_type
+        )
+
+    def _do_run_self_test(self, disk: DiskInfo, test_type: str) -> Tuple[bool, str]:
+        if not disk.is_remote:
+            return LocalDiskDetector.run_self_test(disk.device_path, test_type)
+
+        server_id = disk.server_id
+        srv = next((s for s in self._active_servers if s.id == server_id), None)
+        if not srv:
+            raise Exception("Server not found in configuration.")
+
+        client = self._ssh_clients.get(server_id)
+        if not client or not client.is_connected():
+            client = RemoteSSHClient(srv)
+            ok, msg = client.connect(timeout=8)
+            if not ok:
+                raise Exception(msg)
+            self._ssh_clients[server_id] = client
+
+        return client.run_self_test(disk.device_path, test_type)
+
+    def _on_self_test_result(self, disk: DiskInfo, test_type: str, result):
+        ok, msg = result
+        if ok:
+            self.status_bar.showMessage(f"Self-test ({test_type}) started on {disk.device_path}.")
+            QMessageBox.information(
+                self, "Self-Test Started",
+                f"Self-test ({test_type}) queued on {disk.model} ({disk.device_path}).\n\n"
+                f"{msg}\n\nUse 'Scan Now' later to read the result from the SMART self-test log."
+            )
+        else:
+            self._on_self_test_error(disk, msg)
+
+    def _on_self_test_error(self, disk: DiskInfo, error_msg: str):
+        self.status_bar.showMessage(f"Failed to start self-test on {disk.device_path}: {error_msg}")
+        QMessageBox.warning(self, "Self-Test Failed", f"Could not start self-test:\n\n{error_msg}")
 
     def _on_single_disk_error(self, error_msg: str):
         self.detail_panel.set_loading(False, f"Error: {error_msg}")

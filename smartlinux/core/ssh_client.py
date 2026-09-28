@@ -284,13 +284,37 @@ class RemoteSSHClient:
 
         Only queues the test; does not wait for completion. Results show up in a
         later scan under the SMART self-test log.
+
+        Deliberately does NOT use exec_smartctl(): that helper retries across up
+        to 3 auth paths based on detecting JSON output, which is meaningless for
+        this plain-text, state-changing command and previously caused the same
+        'smartctl -t' to fire 2-3 times per click - the 2nd/3rd call would then
+        collide with the test the 1st call had just started, always reporting a
+        false "test already in progress" even though the test did queue.
         """
         mode = "long" if test_type == "long" else "short"
-        code, out, err = self.exec_smartctl(f"-t {mode} {device_path}", timeout=15)
-        output = (out or "") + (err or "")
-        if code == 0 or "test has begun" in output.lower():
-            return True, output.strip() or f"Self-test ({mode}) started."
-        return False, output.strip() or f"smartctl exited with code {code}"
+        cmd = f"smartctl -t {mode} {device_path}"
+
+        use_sudo_first = self.config.username != "root" and bool(self.config.password)
+        if use_sudo_first:
+            code, out, err = self._exec_with_sudo(cmd, timeout=15)
+        else:
+            code, out, err = self._raw_exec(cmd, timeout=15)
+        output = ((out or "") + (err or "")).strip()
+
+        if code == 0 or "has begun" in output.lower():
+            return True, output
+
+        permission_issue = any(
+            term in output.lower() for term in ("permission denied", "operation not permitted", "must be root")
+        )
+        if permission_issue and not use_sudo_first and self.config.password:
+            code, out, err = self._exec_with_sudo(cmd, timeout=15)
+            output = ((out or "") + (err or "")).strip()
+            if code == 0 or "has begun" in output.lower():
+                return True, output
+
+        return False, output or f"smartctl exited with code {code}"
 
     def discover_remote_drives(self) -> List[DiskInfo]:
         drives: List[DiskInfo] = []

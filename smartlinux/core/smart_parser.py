@@ -83,6 +83,10 @@ class SmartParser:
         # Telemetry: Temperature, Hours, Cycles
         cls._extract_telemetry(data, disk)
 
+        # Native self-test status (smartctl -t short/long), so the UI can show
+        # what happened after a test started from the 'Self-Test' button.
+        cls._extract_self_test_status(data, disk)
+
         # Parse SMART attributes and determine Health
         if "nvme_smart_health_information_log" in data:
             cls._parse_nvme_health(data, disk)
@@ -107,6 +111,59 @@ class SmartParser:
         
         if "power_cycle_count" in data:
             disk.power_cycles = int(data["power_cycle_count"])
+
+    @classmethod
+    def _format_hours_ago(cls, current_hours: Optional[int], entry_hours: Optional[int]) -> str:
+        """Turns 'this test ran at lifetime hour N' into a human 'X days ago', so an old
+        self-test log entry isn't mistaken for something that just happened."""
+        if current_hours is None or entry_hours is None:
+            return ""
+        delta = current_hours - entry_hours
+        if delta < 0:
+            return ""
+        if delta < 1:
+            return " (just now)"
+        if delta < 24:
+            return f" ({delta} hour{'s' if delta != 1 else ''} ago)"
+        days = delta // 24
+        return f" ({days} day{'s' if days != 1 else ''} ago)"
+
+    @classmethod
+    def _extract_self_test_status(cls, data: Dict[str, Any], disk: DiskInfo):
+        nvme_log = data.get("nvme_self_test_log")
+        if nvme_log is not None:
+            current_op = nvme_log.get("current_self_test_operation", {}).get("string")
+            if current_op and "no self-test" not in current_op.lower():
+                disk.self_test_status = current_op
+                return
+            table = nvme_log.get("table", [])
+            if table:
+                entry = table[0]
+                type_str = entry.get("self_test_code", {}).get("string", "Self-Test")
+                status_str = entry.get("self_test_result", {}).get("string", "Unknown")
+                ago = cls._format_hours_ago(disk.power_on_hours, entry.get("power_on_hours"))
+                disk.self_test_status = f"{type_str}: {status_str}{ago}"
+            return
+
+        # ATA: 'ata_smart_data.self_test.status.string' is a permanent summary field,
+        # present even when idle (e.g. plain "completed without error") - it's only
+        # a *live* in-progress indicator when it actually mentions progress/percent.
+        # Only trust it for that; otherwise prefer the self-test LOG entry below,
+        # which carries the test type and lifetime_hours needed to say "X days ago".
+        live_status = data.get("ata_smart_data", {}).get("self_test", {}).get("status", {}).get("string")
+        if live_status and ("progress" in live_status.lower() or "%" in live_status):
+            disk.self_test_status = live_status
+            return
+
+        table = data.get("ata_smart_self_test_log", {}).get("standard", {}).get("table", [])
+        if table:
+            entry = table[0]
+            type_str = entry.get("type", {}).get("string", "Self-Test")
+            status_str = entry.get("status", {}).get("string", "Unknown")
+            ago = cls._format_hours_ago(disk.power_on_hours, entry.get("lifetime_hours"))
+            disk.self_test_status = f"{type_str}: {status_str}{ago}"
+        elif live_status:
+            disk.self_test_status = live_status
 
     @classmethod
     def _parse_ata_attributes(cls, data: Dict[str, Any], disk: DiskInfo):

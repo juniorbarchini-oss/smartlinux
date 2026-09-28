@@ -76,7 +76,7 @@ class DetailPanel(QWidget):
         self.tabs.addTab(diagnostics_widget, "Diagnostics")
 
         self.history_tab = HistoryTab()
-        self.tabs.addTab(self.history_tab, "Historial")
+        self.tabs.addTab(self.history_tab, "History")
 
         main_layout = QVBoxLayout(diagnostics_widget)
         main_layout.setContentsMargins(14, 14, 14, 14)
@@ -108,6 +108,11 @@ class DetailPanel(QWidget):
         self.info_lbl = QLabel("Device telemetry details will appear here.")
         self.info_lbl.setStyleSheet("font-size: 13px; color: #8b949e;")
         hdr_layout.addWidget(self.info_lbl)
+
+        # Last Self-Test result row (filled after a scan; see 'Self-Test' button)
+        self.self_test_status_lbl = QLabel("Last Self-Test: —")
+        self.self_test_status_lbl.setStyleSheet("font-size: 13px; color: #8b949e; font-weight: 600;")
+        hdr_layout.addWidget(self.self_test_status_lbl)
 
         main_layout.addWidget(self.header_card)
 
@@ -190,7 +195,7 @@ class DetailPanel(QWidget):
         self.self_test_btn.setEnabled(False)
         self._self_test_menu = QMenu(self.self_test_btn)
         self._self_test_menu.addAction("Short (~2 min)", lambda: self._on_self_test_clicked("short"))
-        self._self_test_menu.addAction("Long / Extended (puede tardar horas)", lambda: self._on_self_test_clicked("long"))
+        self._self_test_menu.addAction("Long / Extended (can take hours)", lambda: self._on_self_test_clicked("long"))
         self.self_test_btn.setMenu(self._self_test_menu)
         action_layout.addWidget(self.self_test_btn)
 
@@ -225,6 +230,23 @@ class DetailPanel(QWidget):
             f"Type: <b>{disk.protocol} ({disk.rotation_rate})</b>"
         )
         self.info_lbl.setText(info_text)
+
+        # Last Self-Test result (set by 'Self-Test' button + a later 'Scan Now')
+        if disk.self_test_status:
+            status_lower = disk.self_test_status.lower()
+            if "progress" in status_lower or "remaining" in status_lower:
+                color = "#e3b341"
+            elif "without error" in status_lower or "completed" in status_lower or "passed" in status_lower:
+                color = "#3fb950"
+            elif "fail" in status_lower or "error" in status_lower or "abort" in status_lower:
+                color = "#f85149"
+            else:
+                color = "#8b949e"
+            self.self_test_status_lbl.setText(f"Last Self-Test: {disk.self_test_status}")
+            self.self_test_status_lbl.setStyleSheet(f"font-size: 13px; color: {color}; font-weight: 600;")
+        else:
+            self.self_test_status_lbl.setText("Last Self-Test: — (use the 'Self-Test' button below, then 'Scan Now')")
+            self.self_test_status_lbl.setStyleSheet("font-size: 13px; color: #8b949e; font-weight: 600;")
 
         # Error Banner
         if disk.error_message:

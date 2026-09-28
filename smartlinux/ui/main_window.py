@@ -417,7 +417,9 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self, "Self-Test Started",
                 f"Self-test ({test_type}) queued on {disk.model} ({disk.device_path}).\n\n"
-                f"{msg}\n\nUse 'Scan Now' later to read the result from the SMART self-test log."
+                f"{msg}\n\n"
+                f"Wait for it to finish, then click 'Scan Now' again on this drive — "
+                f"the result will show up as 'Last Self-Test' right under the drive name, at the top of the Diagnostics tab."
             )
         else:
             self._on_self_test_error(disk, msg)

@@ -9,7 +9,7 @@ from ..core.models import DiskInfo
 from ..core.history_manager import HistoryManager
 
 COLUMNS = [
-    ("timestamp", "Fecha (UTC)"),
+    ("timestamp", "Date (UTC)"),
     ("pending_sector", "Pending Sector"),
     ("reallocated_sector_ct", "Reallocated Sector Ct"),
     ("reallocated_event_count", "Reallocated Event Count"),
@@ -35,18 +35,18 @@ class HistoryTab(QWidget):
         layout.setSpacing(10)
 
         hdr = QHBoxLayout()
-        title = QLabel("HISTORIAL DE ATRIBUTOS SMART")
+        title = QLabel("S.M.A.R.T. ATTRIBUTE HISTORY")
         title.setStyleSheet("font-size: 13px; font-weight: bold; color: #8b949e; letter-spacing: 1px;")
         hdr.addWidget(title)
         hdr.addStretch()
-        self.count_lbl = QLabel("0 registros")
+        self.count_lbl = QLabel("0 entries")
         self.count_lbl.setStyleSheet("font-size: 12px; color: #8b949e;")
         hdr.addWidget(self.count_lbl)
         layout.addLayout(hdr)
 
         self.info_lbl = QLabel(
-            "Se guarda un registro cada vez que se hace 'Scan Now' sobre este disco. "
-            "Archivo: ~/.local/share/smartlinux/history.jsonl"
+            "A new entry is saved every time you run 'Scan Now' on this drive. "
+            "File: ~/.local/share/smartlinux/history.jsonl"
         )
         self.info_lbl.setWordWrap(True)
         self.info_lbl.setStyleSheet("font-size: 12px; color: #8b949e;")
@@ -65,11 +65,11 @@ class HistoryTab(QWidget):
     def load_history(self, disk: Optional[DiskInfo]):
         self.table.setRowCount(0)
         if disk is None:
-            self.count_lbl.setText("0 registros")
+            self.count_lbl.setText("0 entries")
             return
 
         entries = HistoryManager.get_history(disk)
-        self.count_lbl.setText(f"{len(entries)} registro(s)")
+        self.count_lbl.setText("1 entry" if len(entries) == 1 else f"{len(entries)} entries")
         if not entries:
             return
 
@@ -89,7 +89,7 @@ class HistoryTab(QWidget):
                     prev_value = previous.get(field)
                     if isinstance(value, (int, float)) and isinstance(prev_value, (int, float)) and value > prev_value:
                         item.setForeground(QColor("#f85149"))
-                        item.setToolTip(f"Empeoró respecto al scan anterior ({prev_value} → {value})")
+                        item.setToolTip(f"Worse than the previous scan ({prev_value} → {value})")
 
                 self.table.setItem(row, col, item)
 

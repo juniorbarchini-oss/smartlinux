@@ -236,7 +236,7 @@ class LocalDiskDetector:
                 capture_output=True, text=True, timeout=15
             )
             output = (proc.stdout or "") + (proc.stderr or "")
-            if proc.returncode == 0 or "test has begun" in output.lower():
+            if proc.returncode == 0 or "has begun" in output.lower():
                 return True, output.strip() or f"Self-test ({mode}) started."
             return False, output.strip() or f"smartctl exited with code {proc.returncode}"
         except Exception as e:

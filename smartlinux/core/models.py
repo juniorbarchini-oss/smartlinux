@@ -76,6 +76,7 @@ class DiskInfo:
     server_name: Optional[str] = None
     raw_json: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
+    self_test_status: Optional[str] = None
 
     @property
     def display_title(self) -> str:

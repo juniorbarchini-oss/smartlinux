@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from typing import List, Tuple, Optional
 from .models import DiskInfo, HealthStatus
-from .smart_parser import SmartParser
+from .smart_parser import SmartParser, SMART_DEVICE_TYPES, reading_quality
 
 
 class LocalDiskDetector:
@@ -160,11 +160,12 @@ class LocalDiskDetector:
     def read_drive_smart(cls, device_path: str) -> DiskInfo:
         """Reads and parses full SMART data for a specific local drive with intelligent bridge fallback."""
         smartctl_bin = cls.get_smartctl_bin()
-        device_types = [None, "scsi", "sat,auto", "sntrealtek", "sntjmicron", "sntasmedia", "usbjmicron", "usbsunplus"]
+        device_types = SMART_DEVICE_TYPES
         is_usb = cls.check_is_usb(device_path)
         
         last_error = ""
         best_disk = None
+        best_quality = (0, False)
 
         for dev_type in device_types:
             try:
@@ -177,26 +178,15 @@ class LocalDiskDetector:
                 if proc.stdout:
                     try:
                         data = json.loads(proc.stdout)
-                        has_smart = (
-                            "smart_status" in data or 
-                            "ata_smart_attributes" in data or 
-                            "nvme_smart_health_information_log" in data
-                        )
-                        has_identity = (
-                            "model_name" in data or 
-                            "scsi_product" in data or 
-                            "user_capacity" in data or
-                            "serial_number" in data
-                        )
-
-                        if has_smart or has_identity:
+                        quality = reading_quality(data)
+                        if quality:
                             disk = SmartParser.parse_smart_json(data, device_path)
                             if is_usb:
                                 disk.is_usb = True
-                            if disk.health_status != HealthStatus.UNKNOWN and disk.size_bytes > 0:
+                            if quality == 2 and disk.health_status != HealthStatus.UNKNOWN and disk.size_bytes > 0:
                                 return disk
-                            if best_disk is None or (disk.size_bytes > 0 and best_disk.size_bytes == 0):
-                                best_disk = disk
+                            if best_disk is None or (quality, disk.size_bytes > 0) > best_quality:
+                                best_disk, best_quality = disk, (quality, disk.size_bytes > 0)
                     except json.JSONDecodeError:
                         pass
                 

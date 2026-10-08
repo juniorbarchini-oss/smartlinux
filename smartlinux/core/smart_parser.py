@@ -19,6 +19,37 @@ def format_bytes_commercial(size_bytes: int) -> str:
     return f"{size:.0f} {units[unit_idx]}"
 
 
+# Device types tried in order by smartctl (-d). None = auto-detect. Order matters:
+# native/ATA-passthrough types come BEFORE generic "scsi", because many USB bridges
+# answer "scsi" with their own identity (e.g. "JMicron SATA") and no SMART data.
+SMART_DEVICE_TYPES = [
+    None, "sat", "sat,auto", "sat,12", "sat,16",
+    "usbjmicron", "usbsunplus", "usbcypress", "usbprolific",
+    "sntrealtek", "sntjmicron", "sntasmedia",
+    "scsi",
+]
+
+
+def reading_quality(data: Dict[str, Any]) -> int:
+    """Scores how much real SMART data a smartctl JSON reply carries.
+
+    2 = full telemetry (ATA attribute table, NVMe health log, or SCSI/SAS counters)
+    1 = only health verdict / identity (typical of a USB bridge answering for the disk)
+    0 = nothing useful
+    """
+    if data.get("ata_smart_attributes", {}).get("table"):
+        return 2
+    if "nvme_smart_health_information_log" in data:
+        return 2
+    if "scsi_error_counter_log" in data or "scsi_grown_defect_list" in data:
+        return 2
+    if "smart_status" in data or "ata_smart_data" in data:
+        return 1
+    if any(k in data for k in ("model_name", "scsi_product", "user_capacity", "serial_number")):
+        return 1
+    return 0
+
+
 class SmartParser:
     """Parses JSON output from smartctl (-j -a)."""
 

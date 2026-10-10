@@ -5,7 +5,7 @@ import sys
 from typing import List, Tuple, Optional, Dict, Any
 import paramiko
 from .models import ServerConfig, DiskInfo, HealthStatus
-from .smart_parser import SmartParser
+from .smart_parser import SmartParser, SMART_DEVICE_TYPES, reading_quality
 
 
 UNIVERSAL_PATH = (
@@ -415,8 +415,9 @@ class RemoteSSHClient:
         return drives
 
     def read_remote_drive_smart(self, device_path: str) -> DiskInfo:
-        device_types = [None, "scsi", "sat,auto", "sntrealtek", "sntjmicron", "sntasmedia", "usbjmicron", "usbsunplus"]
+        device_types = SMART_DEVICE_TYPES
         best_disk = None
+        best_quality = (0, False)
         last_error = ""
         last_json = None
         last_code = 0
@@ -429,27 +430,17 @@ class RemoteSSHClient:
             if json_data:
                 last_json = json_data
                 if not is_permission_denied_json(json_data):
-                    has_smart = (
-                        "smart_status" in json_data or 
-                        "ata_smart_attributes" in json_data or 
-                        "nvme_smart_health_information_log" in json_data
-                    )
-                    has_identity = (
-                        "model_name" in json_data or 
-                        "scsi_product" in json_data or 
-                        "user_capacity" in json_data or
-                        "serial_number" in json_data
-                    )
-                    if has_smart or has_identity:
+                    quality = reading_quality(json_data)
+                    if quality:
                         try:
                             disk = SmartParser.parse_smart_json(json_data, device_path)
                             disk.is_remote = True
                             disk.server_id = self.config.id
                             disk.server_name = self.config.name
-                            if disk.health_status != HealthStatus.UNKNOWN and disk.size_bytes > 0:
+                            if quality == 2 and disk.health_status != HealthStatus.UNKNOWN and disk.size_bytes > 0:
                                 return disk
-                            if best_disk is None or (disk.size_bytes > 0 and best_disk.size_bytes == 0):
-                                best_disk = disk
+                            if best_disk is None or (quality, disk.size_bytes > 0) > best_quality:
+                                best_disk, best_quality = disk, (quality, disk.size_bytes > 0)
                         except Exception as e:
                             print(f"Error parsing SMART JSON: {e}")
             if err:

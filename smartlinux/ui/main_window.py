@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, QThread, Signal, QTimer
 
 from ..core.models import DiskInfo, ServerConfig, HealthStatus
 from ..core.detector import LocalDiskDetector
-from ..core.ssh_client import RemoteSSHClient
+from ..core.ssh_client import create_ssh_client, AutoSSHClient, host_key_fingerprint, trust_host_key, known_hosts_label
 from ..core.config_manager import ConfigManager
 from ..core.exporter import ReportExporter
 from ..core.watcher import DeviceHotplugWatcher
@@ -53,7 +53,7 @@ class MainWindow(QMainWindow):
         # Worker & Disk tracking
         self._active_workers: Set[QThread] = set()
         self._active_servers: List[ServerConfig] = []
-        self._ssh_clients: Dict[str, RemoteSSHClient] = {}
+        self._ssh_clients: Dict[str, AutoSSHClient] = {}
         self._all_known_disks: Dict[str, DiskInfo] = {}
         self._last_preflight_issue: str = ""
 
@@ -264,7 +264,7 @@ class MainWindow(QMainWindow):
         )
 
     def _do_discover_remote_drives(self, srv: ServerConfig) -> List[DiskInfo]:
-        client = RemoteSSHClient(srv)
+        client = create_ssh_client(srv)
         self._ssh_clients[srv.id] = client
         ok, msg = client.connect(timeout=8)
         if not ok:
@@ -298,19 +298,20 @@ class MainWindow(QMainWindow):
             client = self._ssh_clients.get(server_id)
             if client and client.last_untrusted_host_key:
                 host, key = client.last_untrusted_host_key
-                fp = ":".join(f"{b:02x}" for b in key.get_fingerprint())
+                fp = host_key_fingerprint(key)
+                where = known_hosts_label(key)
                 reply = QMessageBox.question(
                     self,
                     f"Trust Remote Host Key: {srv_name}?",
-                    f"Host key for '{host}' is not present in ~/.ssh/known_hosts.\n\n"
+                    f"Host key for '{host}' is not present in the trusted host keys.\n\n"
                     f"Key Type: {key.get_name()}\n"
                     f"Fingerprint: {fp}\n\n"
-                    f"Do you want to trust this host and save its key to ~/.ssh/known_hosts?",
+                    f"Do you want to trust this host and save its key to {where}?",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No
                 )
                 if reply == QMessageBox.Yes:
-                    if RemoteSSHClient.trust_and_save_host_key(host, key):
+                    if trust_host_key(host, key):
                         self.status_bar.showMessage(f"Host key saved for {srv_name}. Retrying connection...")
                         self._on_refresh_server(server_id)
                         return
@@ -360,7 +361,7 @@ class MainWindow(QMainWindow):
             
             client = self._ssh_clients.get(server_id)
             if not client or not client.is_connected():
-                client = RemoteSSHClient(srv)
+                client = create_ssh_client(srv)
                 ok, msg = client.connect(timeout=8)
                 if not ok:
                     raise Exception(msg)
@@ -402,7 +403,7 @@ class MainWindow(QMainWindow):
 
         client = self._ssh_clients.get(server_id)
         if not client or not client.is_connected():
-            client = RemoteSSHClient(srv)
+            client = create_ssh_client(srv)
             ok, msg = client.connect(timeout=8)
             if not ok:
                 raise Exception(msg)

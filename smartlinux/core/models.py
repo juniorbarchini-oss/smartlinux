@@ -112,6 +112,7 @@ class ServerConfig:
     auth_type: str = "password"  # "password" or "key"
     key_path: Optional[str] = None
     password: Optional[str] = None
+    legacy_ssh: bool = False  # force the PuTTY `plink` engine (old devices, e.g. ssh-dss only)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -122,7 +123,8 @@ class ServerConfig:
             "username": self.username,
             "auth_type": self.auth_type,
             "key_path": self.key_path,
-            "password": self.password
+            "password": self.password,
+            "legacy_ssh": self.legacy_ssh
         }
 
     @classmethod
@@ -135,5 +137,6 @@ class ServerConfig:
             username=data.get("username", "root"),
             auth_type=data.get("auth_type", "password"),
             key_path=data.get("key_path"),
-            password=data.get("password")
+            password=data.get("password"),
+            legacy_ssh=bool(data.get("legacy_ssh", False))
         )

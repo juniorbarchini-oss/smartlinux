@@ -1,13 +1,13 @@
 import os
 from typing import Optional
 from PySide6.QtWidgets import (
-    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QCheckBox, QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QFileDialog,
     QMessageBox, QSpinBox, QFormLayout, QFrame, QStackedWidget
 )
 from PySide6.QtCore import Qt, QThread, Signal
 from ..core.models import ServerConfig
-from ..core.ssh_client import RemoteSSHClient
+from ..core.ssh_client import create_ssh_client, AutoSSHClient, host_key_fingerprint, trust_host_key, known_hosts_label
 
 
 class TestSSHThread(QThread):
@@ -18,7 +18,7 @@ class TestSSHThread(QThread):
         self.config = config
 
     def run(self):
-        client = RemoteSSHClient(self.config)
+        client = create_ssh_client(self.config)
         ok, msg = client.connect(timeout=6)
         if ok:
             client.disconnect()
@@ -140,6 +140,13 @@ class ServerDialog(QDialog):
         auth_layout.addWidget(self.auth_stack)
         layout.addWidget(auth_frame)
 
+        self.legacy_check = QCheckBox("Legacy SSH (old devices)")
+        self.legacy_check.setToolTip(
+            "Use PuTTY's plink instead of the built-in SSH library. Needed by old NAS/routers that only "
+            "offer ssh-dss host keys. Normally detected automatically; requires plink (putty-tools)."
+        )
+        layout.addWidget(self.legacy_check)
+
         # Status label
         self.test_status_label = QLabel("")
         self.test_status_label.setWordWrap(True)
@@ -214,7 +221,8 @@ class ServerDialog(QDialog):
             username=user or "root",
             auth_type=auth_type,
             key_path=key_path,
-            password=password
+            password=password,
+            legacy_ssh=self.legacy_check.isChecked()
         )
 
     def _test_connection(self):
@@ -231,7 +239,7 @@ class ServerDialog(QDialog):
         self.test_thread.result_ready.connect(self._on_test_result)
         self.test_thread.start()
 
-    def _on_test_result(self, ok: bool, msg: str, client: Optional[RemoteSSHClient] = None):
+    def _on_test_result(self, ok: bool, msg: str, client: Optional[AutoSSHClient] = None):
         self.test_btn.setEnabled(True)
         self.test_btn.setText("🔍 Test Connection")
         if ok:
@@ -251,19 +259,20 @@ class ServerDialog(QDialog):
                 )
             elif client and client.last_untrusted_host_key:
                 host, key = client.last_untrusted_host_key
-                fp = ":".join(f"{b:02x}" for b in key.get_fingerprint())
+                fp = host_key_fingerprint(key)
+                where = known_hosts_label(key)
                 reply = QMessageBox.question(
                     self,
                     "Trust Remote Host Key?",
-                    f"Host key for '{host}' is not present in ~/.ssh/known_hosts.\n\n"
+                    f"Host key for '{host}' is not present in the trusted host keys.\n\n"
                     f"Key Type: {key.get_name()}\n"
                     f"Fingerprint: {fp}\n\n"
-                    f"Do you want to trust this host and save its key to ~/.ssh/known_hosts?",
+                    f"Do you want to trust this host and save its key to {where}?",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No
                 )
                 if reply == QMessageBox.Yes:
-                    if RemoteSSHClient.trust_and_save_host_key(host, key):
+                    if trust_host_key(host, key):
                         self.test_status_label.setStyleSheet("color: #58a6ff; font-size: 13px;")
                         self.test_status_label.setText("✓ Host key saved to known_hosts. Retesting...")
                         self._test_connection()
@@ -277,7 +286,8 @@ class ServerDialog(QDialog):
         self.host_input.setText(cfg.host)
         self.port_input.setValue(cfg.port)
         self.user_input.setText(cfg.username)
-        
+        self.legacy_check.setChecked(cfg.legacy_ssh)
+
         if cfg.auth_type == "key":
             self.auth_combo.setCurrentIndex(1)
             if cfg.key_path:

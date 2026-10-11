@@ -1,0 +1,9 @@
+sys_vendor=Dell Inc.
+product_name=PowerEdge R630
+product_version=
+bios_vendor=Dell Inc.
+bios_version=2.2.5
+bios_date=09/06/2016
+chassis_vendor=Dell Inc.
+chassis_type=23
+board_name=02C2CP

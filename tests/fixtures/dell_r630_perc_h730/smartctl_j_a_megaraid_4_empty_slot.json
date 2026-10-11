@@ -1,0 +1,35 @@
+{
+  "json_format_version": [
+    1,
+    0
+  ],
+  "smartctl": {
+    "version": [
+      7,
+      5
+    ],
+    "pre_release": false,
+    "svn_revision": "5714",
+    "platform_info": "x86_64-linux-7.0.14-20-pve",
+    "build_info": "(local build)",
+    "argv": [
+      "smartctl",
+      "-j",
+      "-a",
+      "-d",
+      "megaraid,4",
+      "/dev/bus/0"
+    ],
+    "messages": [
+      {
+        "string": "Smartctl open device: /dev/bus/0 [megaraid_disk_04] failed: INQUIRY failed",
+        "severity": "error"
+      }
+    ],
+    "exit_status": 2
+  },
+  "local_time": {
+    "time_t": 1791745002,
+    "asctime": "Sun Oct 11 15:56:42 2026 -03"
+  }
+}

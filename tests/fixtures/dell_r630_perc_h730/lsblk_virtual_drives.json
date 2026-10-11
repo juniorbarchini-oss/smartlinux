@@ -1,0 +1,45 @@
+{
+   "blockdevices": [
+      {
+         "name": "sda",
+         "path": "/dev/sda",
+         "model": "PERC H730 Mini",
+         "size": "1.1T",
+         "type": "disk",
+         "tran": null,
+         "rota": true,
+         "serial": "00000000000000000000000000000000",
+         "vendor": "DELL    "
+      },{
+         "name": "sdb",
+         "path": "/dev/sdb",
+         "model": "PERC H730 Mini",
+         "size": "1.1T",
+         "type": "disk",
+         "tran": null,
+         "rota": true,
+         "serial": "00000000000000000000000000000000",
+         "vendor": "DELL    "
+      },{
+         "name": "sdc",
+         "path": "/dev/sdc",
+         "model": "PERC H730 Mini",
+         "size": "1.1T",
+         "type": "disk",
+         "tran": null,
+         "rota": true,
+         "serial": "00000000000000000000000000000000",
+         "vendor": "DELL    "
+      },{
+         "name": "sdd",
+         "path": "/dev/sdd",
+         "model": "PERC H730 Mini",
+         "size": "1.1T",
+         "type": "disk",
+         "tran": null,
+         "rota": true,
+         "serial": "00000000000000000000000000000000",
+         "vendor": "DELL    "
+      }
+   ]
+}

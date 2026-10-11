@@ -1,0 +1,51 @@
+Getting SMBIOS data from sysfs.
+SMBIOS 2.8 present.
+BIOS Information
+	Vendor: Dell Inc.
+	Version: 2.2.5
+	Release Date: 09/06/2016
+	Address: 0xF0000
+	Runtime Size: 64 kB
+	ROM Size: 16 MB
+	Characteristics:
+		ISA is supported
+		PCI is supported
+		PNP is supported
+		BIOS is upgradeable
+		BIOS shadowing is allowed
+		Boot from CD is supported
+		Selectable boot is supported
+		EDD is supported
+		Japanese floppy for Toshiba 1.2 MB is supported (int 13h)
+		5.25"/360 kB floppy services are supported (int 13h)
+		5.25"/1.2 MB floppy services are supported (int 13h)
+		3.5"/720 kB floppy services are supported (int 13h)
+		8042 keyboard services are supported (int 9h)
+		Serial services are supported (int 14h)
+		CGA/mono video services are supported (int 10h)
+		ACPI is supported
+		USB legacy is supported
+		BIOS boot specification is supported
+		Function key-initiated network boot is supported
+		Targeted content distribution is supported
+		UEFI is supported
+	BIOS Revision: 2.2
+System Information
+	Manufacturer: Dell Inc.
+	Product Name: PowerEdge R630
+	Version: Not Specified
+	Serial Number: XXXXXXX
+	UUID: REDACTED
+	Wake-up Type: Power Switch
+	SKU Number: XXXXXXX
+	Family: Not Specified
+System Configuration Options
+	Option 1: NVRAM_CLR: Clear user settable NVRAM areas and set defaults
+	Option 2: PWRD_EN: Close to enable password
+BIOS Language Information
+	Language Description Format: Long
+	Installable Languages: 1
+		en|US|iso8859-1
+	Currently Installed Language: en|US|iso8859-1
+System Boot Information
+	Status: No errors detected

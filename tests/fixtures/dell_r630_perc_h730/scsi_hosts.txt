@@ -1,0 +1,17 @@
+host0: proc_name=megaraid_sas state=running fw= drv= unique_id=512
+host1: proc_name=ahci state=running fw= drv= unique_id=1
+host10: proc_name=ahci state=running fw= drv= unique_id=10
+host11: proc_name=(null) state=running fw= drv= unique_id=11
+host13: proc_name=(null) state=running fw= drv= unique_id=13
+host2: proc_name=ahci state=running fw= drv= unique_id=2
+host3: proc_name=ahci state=running fw= drv= unique_id=3
+host4: proc_name=ahci state=running fw= drv= unique_id=4
+host5: proc_name=ahci state=running fw= drv= unique_id=5
+host6: proc_name=ahci state=running fw= drv= unique_id=6
+host7: proc_name=ahci state=running fw= drv= unique_id=7
+host8: proc_name=ahci state=running fw= drv= unique_id=8
+host9: proc_name=ahci state=running fw= drv= unique_id=9
+filename:       /lib/modules/7.0.14-20-pve/kernel/drivers/scsi/megaraid/megaraid_sas.ko
+description:    Broadcom MegaRAID SAS Driver
+version:        07.734.00.00-rc1
+megaraid_sas          196608  11

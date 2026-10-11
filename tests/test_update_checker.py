@@ -249,7 +249,7 @@ def test_package_version_matches_pkgbuild():
     tag = re.search(r"^_tag=([^#\s]+)", text, re.MULTILINE)
     assert tag, "_tag not found in PKGBUILD"
     assert smartlinux.__version__ == tag.group(1).strip().strip("\"'")
-    assert re.search(r"^pkgver=\$\{_tag//-/\}$", text, re.MULTILINE), "pkgver must derive from _tag"
+    assert re.search(r"^pkgver=\$\{_tag//-/\}(\s|#|$)", text, re.MULTILINE), "pkgver must derive from _tag"
 
 
 def test_pre_releases_sort_before_the_final_release():

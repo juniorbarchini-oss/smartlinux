@@ -12,6 +12,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import raid
 from .models import DiskInfo, HealthStatus
 from .smart_parser import SmartParser, SMART_DEVICE_TYPES, reading_quality, reading_rank, format_bytes_commercial
 from .smart_text_parser import (
@@ -142,7 +143,8 @@ class BaseRemoteClient:
 
         return code, out, err
 
-    def run_self_test(self, device_path: str, test_type: str = "short") -> Tuple[bool, str]:
+    def run_self_test(self, device_path: str, test_type: str = "short",
+                      dev_type: Optional[str] = None) -> Tuple[bool, str]:
         """Triggers the drive's own native self-test (smartctl -t short|long) remotely.
 
         Only queues the test; does not wait for completion. Results show up in a
@@ -156,7 +158,10 @@ class BaseRemoteClient:
         false "test already in progress" even though the test did queue.
         """
         mode = "long" if test_type == "long" else "short"
-        dev_type = self._device_types.get(device_path)
+        if raid.is_passthrough_type(dev_type):
+            dev_type = self._device_types.get(f"{device_path}#{dev_type}", dev_type)
+        else:
+            dev_type = self._device_types.get(device_path)
         opt = f"-d {dev_type} " if dev_type else ""
         cmd = f"smartctl {opt}-t {mode} {device_path}"
 
@@ -178,6 +183,16 @@ class BaseRemoteClient:
 
         return False, output or f"smartctl exited with code {code}"
 
+    # ---- host identity ---------------------------------------------------------------
+    def collect_system_info(self):
+        """Server model, CPU, RAM, OS and storage controllers (read-only, one round trip;
+        sudo only for ``dmidecode -t system`` when a non-root user gave a password)."""
+        from . import system_info
+        sudo = None
+        if self.config.username != "root" and self.config.password:
+            sudo = lambda cmd: self._exec_with_sudo(cmd, timeout=15)  # noqa: E731
+        return system_info.collect(lambda cmd: self._raw_exec(cmd, timeout=25), sudo_run=sudo)
+
     # ---- discovery -----------------------------------------------------------------
     def _new_disk(self, device_path: str, **kwargs) -> DiskInfo:
         return DiskInfo(
@@ -196,20 +211,11 @@ class BaseRemoteClient:
         code, out, err = self.exec_smartctl("--scan -j")
         json_scan = extract_json_object(out)
         if json_scan and "devices" in json_scan:
-            for dev in json_scan.get("devices", []):
-                dev_name = dev.get("name", "")
-                if not dev_name:
-                    continue
-                if is_darwin and any(x in dev_name for x in ["diskimage", "synthesized"]):
-                    continue
-                if any(x in dev_name for x in ["/loop", "/ram", "/zram", "/dm-", "/sr"]):
-                    continue
-
-                protocol = dev.get("protocol", "SATA").upper()
-                is_usb = ("USB" in protocol or "usb" in dev_name)
-                drives.append(self._new_disk(
-                    dev_name, model="Physical Drive", protocol=protocol, is_usb=is_usb
-                ))
+            skip = (lambda n: any(x in n for x in ["diskimage", "synthesized"])) if is_darwin else None
+            for entry in raid.scan_entries(json_scan, skip=skip):
+                drives.append(raid.disk_from_scan_entry(entry, self._new_disk))
+            if not is_darwin:
+                self._apply_sysfs_identity([d for d in drives if not raid.is_passthrough_type(d.smart_dev_type)])
         elif is_unrecognized_option(out):
             # smartctl 5.4x..6.x: --scan exists but -j does not. 5.38 has neither.
             self._text_mode = True
@@ -234,11 +240,47 @@ class BaseRemoteClient:
         if not drives and not is_darwin:
             drives = self._discover_proc_partitions()
 
+        raid.harmonize_controller_labels(drives)
         return drives
+
+    def _apply_sysfs_identity(self, drives: List[DiskInfo]):
+        """Model/vendor/size of scanned block devices from /sys/block (BusyBox-safe, one
+        round trip). Marks RAID virtual drives (e.g. model "PERC H730 Mini")."""
+        by_name = {}
+        for d in drives:
+            name = d.device_path.split("/")[-1]
+            if d.device_path.startswith("/dev/") and re.fullmatch(r"[A-Za-z0-9]+", name):
+                by_name[name] = d
+        if not by_name:
+            return
+        loop = " ".join(by_name)
+        try:
+            code, out, err = self._raw_exec(
+                f'for d in {loop}; do echo "@@$d|$(cat /sys/block/$d/device/vendor 2>/dev/null)|'
+                f'$(cat /sys/block/$d/device/model 2>/dev/null)|$(cat /sys/block/$d/size 2>/dev/null)"; done'
+            )
+        except Exception:
+            return
+        for line in (out or "").splitlines():
+            if not line.startswith("@@"):
+                continue
+            parts = line[2:].split("|")
+            if len(parts) != 4 or parts[0] not in by_name:
+                continue
+            disk = by_name[parts[0]]
+            vendor, model = sanitize_sys_value(parts[1]), sanitize_sys_value(parts[2])
+            if model:
+                disk.model = model
+            size_bytes = raid.sectors_to_bytes(parts[3])
+            if size_bytes:
+                disk.size_bytes = size_bytes
+                disk.size_human = format_bytes_commercial(size_bytes)
+            if raid.is_virtual_raid_model(model, vendor):
+                raid.mark_virtual(disk)
 
     def _discover_lsblk(self) -> List[DiskInfo]:
         drives: List[DiskInfo] = []
-        code, out, err = self._raw_exec("lsblk -J -d -o NAME,PATH,MODEL,SIZE,TRAN,TYPE,ROTA 2>/dev/null")
+        code, out, err = self._raw_exec("lsblk -J -d -o NAME,PATH,MODEL,SIZE,TRAN,TYPE,ROTA,VENDOR 2>/dev/null")
         json_lsblk = extract_json_object(out)
         if json_lsblk and "blockdevices" in json_lsblk:
             for dev in json_lsblk.get("blockdevices", []):
@@ -254,10 +296,13 @@ class BaseRemoteClient:
                 model = dev.get("model") or "Physical Drive"
                 size_str = dev.get("size") or "Unknown"
                 tran = (dev.get("tran") or "SATA").upper()
-                drives.append(self._new_disk(
+                disk = self._new_disk(
                     dev_path, model=model.strip(), size_human=size_str,
                     protocol=tran if tran else "ATA/SATA", is_usb=(tran == "USB")
-                ))
+                )
+                if raid.is_virtual_raid_model(disk.model, dev.get("vendor")):
+                    raid.mark_virtual(disk)
+                drives.append(disk)
         return drives
 
     def _discover_proc_partitions(self) -> List[DiskInfo]:
@@ -300,7 +345,21 @@ class BaseRemoteClient:
         disk.server_name = self.config.name
         return disk
 
-    def read_remote_drive_smart(self, device_path: str) -> DiskInfo:
+    def read_remote_drive_smart(self, device_path: str, dev_type: Optional[str] = None) -> DiskInfo:
+        """``dev_type``: explicit -d type from the scan for a disk behind a RAID controller
+        (e.g. "megaraid,3"); then only that type (and its SAT variant) is tried."""
+        explicit = raid.is_passthrough_type(dev_type)
+        types = raid.read_types_for(dev_type) if explicit else SMART_DEVICE_TYPES
+        type_key = f"{device_path}#{dev_type}" if explicit else device_path
+
+        def stamp(disk: DiskInfo) -> DiskInfo:
+            disk = self._stamp(disk, device_path)
+            if explicit:
+                disk.smart_dev_type = dev_type
+                disk.slot = raid.slot_from_type(dev_type)
+                disk.name = raid.physical_name(dev_type)
+            return disk
+
         best_disk = None
         best_quality = (False, 0)
         best_type: Optional[str] = None
@@ -309,8 +368,8 @@ class BaseRemoteClient:
         last_code = 0
         denied_text = False
 
-        for dev_type in SMART_DEVICE_TYPES:
-            opt = f"-d {dev_type} " if dev_type else ""
+        for try_type in types:
+            opt = f"-d {try_type} " if try_type else ""
 
             if not self._text_mode:
                 code, out, err = self.exec_smartctl(f"-j {opt}-a {device_path}")
@@ -322,12 +381,12 @@ class BaseRemoteClient:
                         quality = reading_quality(json_data)
                         if quality:
                             try:
-                                disk = self._stamp(SmartParser.parse_smart_json(json_data, device_path), device_path)
+                                disk = stamp(SmartParser.parse_smart_json(json_data, device_path))
                                 if quality == 2 and disk.health_status != HealthStatus.UNKNOWN and disk.size_bytes > 0:
-                                    self._device_types[device_path] = dev_type
+                                    self._device_types[type_key] = try_type
                                     return disk
                                 if best_disk is None or reading_rank(quality, disk.size_bytes) > best_quality:
-                                    best_disk, best_quality, best_type = disk, reading_rank(quality, disk.size_bytes), dev_type
+                                    best_disk, best_quality, best_type = disk, reading_rank(quality, disk.size_bytes), try_type
                             except Exception as e:
                                 print(f"Error parsing SMART JSON: {e}")
                 elif is_unrecognized_option(out):
@@ -343,12 +402,12 @@ class BaseRemoteClient:
                 quality = text_reading_quality(out)
                 if quality:
                     try:
-                        disk = self._stamp(parse_smart_text(out, device_path), device_path)
+                        disk = stamp(parse_smart_text(out, device_path))
                         if quality == 2 and disk.health_status != HealthStatus.UNKNOWN and disk.size_bytes > 0:
-                            self._device_types[device_path] = dev_type
+                            self._device_types[type_key] = try_type
                             return disk
                         if best_disk is None or reading_rank(quality, disk.size_bytes) > best_quality:
-                            best_disk, best_quality, best_type = disk, reading_rank(quality, disk.size_bytes), dev_type
+                            best_disk, best_quality, best_type = disk, reading_rank(quality, disk.size_bytes), try_type
                     except Exception as e:
                         print(f"Error parsing SMART text: {e}")
                 if err:
@@ -357,7 +416,7 @@ class BaseRemoteClient:
                     last_error = out.strip().splitlines()[-1] if out.strip() else last_error
 
         if best_disk and (best_disk.size_bytes > 0 or best_disk.model != "Generic Drive"):
-            self._device_types[device_path] = best_type
+            self._device_types[type_key] = best_type
             return best_disk
 
         error_detail = last_error
@@ -373,13 +432,10 @@ class BaseRemoteClient:
         elif not error_detail:
             error_detail = f"No valid SMART response from device (exit code {last_code})"
 
-        return DiskInfo(
+        return stamp(DiskInfo(
             device_path=device_path,
             name=device_path.split("/")[-1],
-            is_remote=True,
-            server_id=self.config.id,
-            server_name=self.config.name,
             health_status=HealthStatus.FAILED,
             health_summary="SMART read failure",
             error_message=error_detail
-        )
+        ))

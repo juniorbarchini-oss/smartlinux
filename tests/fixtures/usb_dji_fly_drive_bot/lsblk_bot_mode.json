@@ -1,0 +1,44 @@
+{
+   "blockdevices": [
+      {
+         "name": "sda",
+         "path": "/dev/sda",
+         "size": "953.9G",
+         "type": "disk",
+         "tran": "usb",
+         "model": "IND-S325S001TX",
+         "fstype": null,
+         "uuid": null,
+         "label": null,
+         "mountpoint": null,
+         "rm": false,
+         "children": [
+            {
+               "name": "sda1",
+               "path": "/dev/sda1",
+               "size": "200G",
+               "type": "part",
+               "tran": null,
+               "model": null,
+               "fstype": "btrfs",
+               "uuid": "09e3f9bd-ba6b-4d72-8ac4-55dd09dd2da9",
+               "label": "USB_BTRFS",
+               "mountpoint": "/run/media/hbarchini/USB_BTRFS",
+               "rm": false
+            },{
+               "name": "sda2",
+               "path": "/dev/sda2",
+               "size": "753.8G",
+               "type": "part",
+               "tran": null,
+               "model": null,
+               "fstype": "ext4",
+               "uuid": "eea6314d-5429-4310-82bb-c9bce122f5af",
+               "label": "USB_DATA",
+               "mountpoint": "/run/media/hbarchini/USB_DATA",
+               "rm": false
+            }
+         ]
+      }
+   ]
+}

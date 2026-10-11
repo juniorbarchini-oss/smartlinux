@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from ..core.models import DiskInfo, ServerConfig, HealthStatus
 from ..core.raid import VIRTUAL_GROUP, VIRTUAL_SUMMARY
+from ..core import controller as ctl
 from .scan_state import scan_action_text
 
 
@@ -26,6 +27,7 @@ class SidebarWidget(QWidget):
     local_refresh_requested = Signal()          # Refresh local drives
     eject_requested = Signal(str)               # Emits device_path for local USB drive
     host_selected = Signal(str)                 # Emits server_id ("" = this computer): show the Server panel
+    controller_selected = Signal(str, str)      # (server_id, controller label): show the controller view
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -36,6 +38,8 @@ class SidebarWidget(QWidget):
         self._local_drives: Dict[str, DiskInfo] = {}
         self._remote_drives: Dict[str, Dict[str, DiskInfo]] = {}
         self._servers: Dict[str, ServerConfig] = {}
+        # vendor tool report per (server_id or "", controller label): feeds the controller's status dot
+        self._controller_reports: Dict[tuple, object] = {}
 
         self._setup_ui()
 
@@ -123,10 +127,10 @@ class SidebarWidget(QWidget):
         for name, members in groups.items():
             n_virtual = sum(1 for d in virtual if d.controller == name)
             grp = QTreeWidgetItem(parent)
-            grp.setText(0, f"🎛️  {controller_group_label(name, len(members), n_virtual)}")
             grp.setToolTip(0, f"{controller_group_label(name, len(members), n_virtual)}\n"
-                              f"Physical disks behind this RAID controller (read with smartctl -d)")
+                              f"Click to open the controller (Scan controller reads every disk and the RAID state)")
             grp.setData(0, Qt.UserRole, {"type": "controller_group", "server_id": server_id, "controller": name})
+            grp.setText(0, self._controller_header_text(server_id, name))
             for disk in sorted(members, key=lambda d: (d.slot is None, d.slot or 0)):
                 self._update_disk_item(QTreeWidgetItem(grp), disk)
             grp.setExpanded(True)
@@ -140,6 +144,61 @@ class SidebarWidget(QWidget):
             for disk in virtual:
                 self._update_disk_item(QTreeWidgetItem(grp), disk)
             grp.setExpanded(True)
+
+    # ---- controller nodes -----------------------------------------------------------------
+    def _host_disks(self, server_id: Optional[str]) -> List[DiskInfo]:
+        if not server_id:
+            return list(self._local_drives.values())
+        return list(self._remote_drives.get(server_id, {}).values())
+
+    def controller_status(self, server_id: Optional[str], name: str) -> HealthStatus:
+        group = ctl.group_by_controller(self._host_disks(server_id)).get(name)
+        if group is None:
+            return HealthStatus.UNKNOWN
+        return ctl.controller_health(group.physical, group.virtual,
+                                     self._controller_reports.get((server_id or "", name)))
+
+    def _controller_header_text(self, server_id: Optional[str], name: str) -> str:
+        """"🟡  PERC H730 Mini (MegaRAID) — 5 physical, 4 virtual": the dot is the worst of its
+        disks and volumes (gray while not everything has been scanned)."""
+        group = ctl.group_by_controller(self._host_disks(server_id)).get(name, ctl.ControllerGroup(name))
+        status = self.controller_status(server_id, name)
+        return f"{status.icon}  {controller_group_label(name, len(group.physical), len(group.virtual))}"
+
+    def _host_root(self, server_id: Optional[str]) -> Optional[QTreeWidgetItem]:
+        if not server_id:
+            return self.local_root
+        for i in range(self.remote_root.childCount()):
+            srv = self.remote_root.child(i)
+            if (srv.data(0, Qt.UserRole) or {}).get("server_id") == server_id:
+                return srv
+        return None
+
+    def _controller_items(self, server_id: Optional[str]):
+        root = self._host_root(server_id)
+        if root is None:
+            return
+        for i in range(root.childCount()):
+            item = root.child(i)
+            data = item.data(0, Qt.UserRole) or {}
+            if data.get("type") == "controller_group":
+                yield item, data.get("controller")
+
+    def refresh_controller_headers(self, server_id: Optional[str]):
+        for item, name in self._controller_items(server_id):
+            item.setText(0, self._controller_header_text(server_id, name))
+
+    def set_controller_report(self, server_id: Optional[str], name: str, report):
+        self._controller_reports[(server_id or "", name)] = report
+        self.refresh_controller_headers(server_id)
+
+    def select_controller(self, server_id: Optional[str], name: str):
+        for item, label in self._controller_items(server_id):
+            if label == name:
+                self.tree.blockSignals(True)
+                self.tree.setCurrentItem(item)
+                self.tree.blockSignals(False)
+                return
 
     @classmethod
     def _find_disk_item(cls, parent: QTreeWidgetItem, uid: str) -> Optional[QTreeWidgetItem]:
@@ -177,6 +236,7 @@ class SidebarWidget(QWidget):
             item = self._find_disk_item(self.local_root, disk.uid)
             if item:
                 self._update_disk_item(item, disk)
+            self.refresh_controller_headers(None)
         else:
             server_id = disk.server_id
             if server_id and server_id in self._remote_drives:
@@ -188,6 +248,7 @@ class SidebarWidget(QWidget):
                         item = self._find_disk_item(srv_item, disk.uid)
                         if item:
                             self._update_disk_item(item, disk)
+                        self.refresh_controller_headers(server_id)
                         break
 
     def _update_disk_item(self, item: QTreeWidgetItem, disk: DiskInfo):
@@ -295,7 +356,9 @@ class SidebarWidget(QWidget):
                 self.disk_selected.emit(disk)
         elif item_type == "group_local":
             self.host_selected.emit("")
-        elif item_type in ("server", "controller_group", "virtual_group"):
+        elif item_type == "controller_group":
+            self.controller_selected.emit(data.get("server_id") or "", data.get("controller") or "")
+        elif item_type in ("server", "virtual_group"):
             self.host_selected.emit(data.get("server_id") or "")
         elif item_type == "server_action":
             server_id = data.get("server_id")

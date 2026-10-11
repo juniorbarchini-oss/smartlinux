@@ -113,7 +113,7 @@ def tool_text(state: Optional[vt.ControllerVendorState], local: bool) -> str:
 class ControllerView(QWidget):
     scan_requested = Signal(str, str)        # server_id, controller label
     cancel_requested = Signal()
-    export_requested = Signal(object)        # list of this controller's physical DiskInfo
+    export_requested = Signal()              # the whole controller report (see core/controller_report.py)
     disk_scan_requested = Signal(object)     # DiskInfo: this row's "↻"
     disk_open_requested = Signal(object)     # DiskInfo: open the full disk view
 
@@ -201,8 +201,9 @@ class ControllerView(QWidget):
         row.addWidget(self.last_scan_lbl)
         row.addStretch()
         self.export_btn = QPushButton("Export report")
-        self.export_btn.setToolTip("Export the S.M.A.R.T. report of this controller's physical disks (.md, .pdf, .doc, .xls)")
-        self.export_btn.clicked.connect(lambda: self.export_requested.emit(list(self.physical)))
+        self.export_btn.setToolTip("Export the full report of this controller: findings with their evidence, "
+                                   "volumes, disks, maintenance and trends (.pdf, .html, .md)")
+        self.export_btn.clicked.connect(self.export_requested.emit)
         row.addWidget(self.export_btn)
         self.progress_bar = QProgressBar()
         self.progress_bar.setFixedWidth(180)

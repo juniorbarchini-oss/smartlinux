@@ -28,6 +28,7 @@ from ..core import system_info
 from ..core import vendor_tools
 from ..core import diagnostics
 from ..core import controller as ctl
+from ..core import controller_report, trends
 
 from .sidebar import SidebarWidget
 from .detail_panel import DetailPanel
@@ -36,6 +37,7 @@ from .controller_view import ControllerView
 from .serial_scan import SerialScanWorker
 from .server_dialog import ServerDialog
 from .export_dialog import ExportDialog
+from .controller_export_dialog import ControllerExportDialog
 from .setup_dialog import SetupDependenciesDialog
 from .compat_dialog import CompatModeDialog
 from .diagnostic_dialog import DiagnosticBundleDialog
@@ -222,7 +224,7 @@ class MainWindow(QMainWindow):
         self.controller_view.setObjectName("DetailContainer")
         self.controller_view.scan_requested.connect(self._on_scan_controller)
         self.controller_view.cancel_requested.connect(self._cancel_serial_scan)
-        self.controller_view.export_requested.connect(self._export_controller_disks)
+        self.controller_view.export_requested.connect(self._export_controller_report)
         self.controller_view.disk_scan_requested.connect(self._on_scan_one_disk)
         self.controller_view.disk_open_requested.connect(self._open_disk_from_controller)
         self.detail_stack.addWidget(self.controller_view)
@@ -1097,10 +1099,7 @@ class MainWindow(QMainWindow):
 
     # ---------------- MULTI-FORMAT EXPORT REPORT DIALOG ----------------
 
-    def _export_controller_disks(self, disks):
-        self._open_export_dialog(preselected=disks)
-
-    def _open_export_dialog(self, disk: Optional[DiskInfo] = None, preselected=None):
+    def _open_export_dialog(self, disk: Optional[DiskInfo] = None):
         available_disks = list(self._all_known_disks.values())
         if not available_disks:
             if self.detail_panel.current_disk:
@@ -1113,8 +1112,7 @@ class MainWindow(QMainWindow):
         dialog = ExportDialog(
             available_disks=available_disks,
             selected_disk=disk or self.detail_panel.current_disk,
-            parent=self,
-            preselected=preselected,
+            parent=self
         )
         if dialog.exec():
             exported = dialog.exported_files
@@ -1135,6 +1133,41 @@ class MainWindow(QMainWindow):
                     subprocess.Popen(["xdg-open", os.path.dirname(exported[0])])
 
                 self.status_bar.showMessage(f"Reports exported ({len(exported)} file(s)).")
+
+    def _export_controller_report(self):
+        """The special report of the open controller: findings with evidence, volumes, disks,
+        maintenance, trends and scope. Built from what the view already holds; reads nothing."""
+        server_id, label = self.controller_view.server_id, self.controller_view.label
+        group = ctl.group_by_controller(self._current_disks(server_id)).get(label)
+        if group is None:
+            return
+        state = self._controller_state(server_id, label)
+        server = next((s for s in self._active_servers if s.id == server_id), None)
+        server_name = server.name if server else (socket.gethostname() or "This computer")
+        disk_trends = {}
+        for disk in group.physical:
+            if ctl.is_scanned(disk) and disk.serial and disk.serial != "N/A":
+                disk_trends[disk.uid] = trends.disk_trend(HistoryManager.get_history(disk))
+        document = controller_report.build_report(
+            label, server_name, group.physical, group.virtual,
+            report=state.report if state else None,
+            storage=ctl.storage_controller_for(self._system_info.get(server_id), label),
+            tool=state.tool if state else None,
+            last_scan=self._last_controller_scan.get((server_id, label)),
+            disk_trends=disk_trends, version=__version__)
+        dialog = ControllerExportDialog(document, f"{server_name}_{label}", parent=self)
+        if dialog.exec() and dialog.exported_files:
+            files = dialog.exported_files
+            box = QMessageBox(self)
+            box.setWindowTitle("Report exported")
+            box.setText("The controller report was saved:\n\n" + "\n".join(f"• {f}" for f in files))
+            open_btn = box.addButton("Open Folder", QMessageBox.ActionRole)
+            ok_btn = box.addButton("OK", QMessageBox.AcceptRole)
+            box.setDefaultButton(ok_btn)
+            box.exec()
+            if box.clickedButton() == open_btn:
+                subprocess.Popen(["xdg-open", os.path.dirname(files[0])])
+            self.status_bar.showMessage(f"Controller report exported ({len(files)} file(s)).")
 
     def closeEvent(self, event):
         if self._compat_worker is not None and self._compat_worker.isRunning():

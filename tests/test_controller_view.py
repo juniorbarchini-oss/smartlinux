@@ -10,6 +10,7 @@ import pytest
 QtWidgets = pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)  # no Qt libs: skip
 
 from smartlinux.core import controller as ctl  # noqa: E402
+from smartlinux.core import controller_report  # noqa: E402
 from smartlinux.core import system_info, vendor_tools as vt  # noqa: E402
 from smartlinux.core.models import DiskInfo  # noqa: E402
 from smartlinux.core.smart_parser import SmartParser  # noqa: E402
@@ -343,34 +344,62 @@ def test_a_physical_disk_still_opens_its_own_view(env):
 
 # ---------------------------------------------------------------- export report from the controller
 
-def test_controller_export_opens_the_export_dialog_with_only_its_physical_disks_checked(env, monkeypatch):
-    from PySide6.QtCore import Qt
-    from smartlinux.ui import export_dialog
+def scanned_window(env):
+    win = env.mw.MainWindow()
+    view = open_controller(win)
+    win.controller_view.scan_requested.emit("", LABEL)
+    return win, view
+
+
+def test_export_button_opens_the_controller_report_dialog(env, monkeypatch, tmp_path):
     seen = {}
 
     class FakeDialog:
         exported_files = []
 
-        def __init__(self, **kwargs):
-            seen.update(kwargs)
+        def __init__(self, document, base_name, parent=None):
+            seen["document"], seen["base"] = document, base_name
 
         def exec(self):
             return 0
 
-    monkeypatch.setattr(env.mw, "ExportDialog", FakeDialog)
-    win = env.mw.MainWindow()
-    view = open_controller(win)
+    monkeypatch.setattr(env.mw, "ControllerExportDialog", FakeDialog)
+    win, view = scanned_window(env)
     assert view.export_btn.isEnabled()
     view.export_btn.click()
-    wanted = {d.uid for d in view.physical}
-    assert wanted and {d.uid for d in seen["preselected"]} == wanted
-    assert all(not d.is_virtual for d in seen["preselected"])
-    # the real dialog checks exactly those rows
-    dialog = export_dialog.ExportDialog(available_disks=seen["available_disks"], parent=win,
-                                        preselected=seen["preselected"])
-    checked = {dialog.disk_list_widget.item(i).data(Qt.UserRole).uid for i in range(dialog.disk_list_widget.count())
-               if dialog.disk_list_widget.item(i).checkState() == Qt.Checked}
-    assert checked == wanted
+    doc = seen["document"]
+    assert doc.title.startswith("RAID controller report")
+    headings = [b.text for b in doc.blocks if isinstance(b, controller_report.Heading) and b.level == 2]
+    assert headings[:3] == ["1. Summary", "2. Findings", "3. Controller"]
+    assert "8. What was read, and how" in headings
+
+
+def test_controller_report_findings_carry_their_evidence(env, tmp_path):
+    win, view = scanned_window(env)
+    group = ctl.group_by_controller(win._current_disks(""))[LABEL]
+    state = win._controller_state("", LABEL)
+    doc = controller_report.build_report(LABEL, "R630", group.physical, group.virtual, report=state.report,
+                                         tool=state.tool, last_scan=1_700_000_000, version="x")
+    findings = [b for b in doc.blocks if isinstance(b, controller_report.Finding)]
+    for f in findings:
+        assert f.title and f.what and f.why and f.source          # every finding explains itself
+    md = controller_report.to_markdown(doc)
+    page = controller_report.to_html(doc)
+    for text in (md, page):
+        assert "Summary" in text and "Physical disks" in text and "does not predict failures" in text
+    preview = os.environ.get("SMARTLINUX_PREVIEW_DIR")
+    if preview:                                                    # manual look at the real layout
+        ok, paths = controller_report.export_files(doc, preview, ["pdf", "html", "md"], "r630")
+        assert ok, paths
+
+
+def test_controller_report_without_a_scan_says_so(env):
+    win = env.mw.MainWindow()
+    group = ctl.group_by_controller(win._current_disks(""))[LABEL]
+    doc = controller_report.build_report(LABEL, "R630", group.physical, group.virtual)
+    verdict = next(b for b in doc.blocks if isinstance(b, controller_report.Verdict))
+    assert "not been scanned" in verdict.headline
+    assert not any(isinstance(b, controller_report.Finding) for b in doc.blocks)
 
 
 def test_controller_export_is_disabled_while_a_scan_runs(env):

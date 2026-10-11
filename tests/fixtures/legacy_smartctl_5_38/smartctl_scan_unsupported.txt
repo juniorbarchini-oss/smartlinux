@@ -1,0 +1,7 @@
+smartctl version 5.38 [arm-mv5sft-linux-gnueabi] Copyright (C) 2002-8 Bruce Allen
+Home page is http://smartmontools.sourceforge.net/
+
+=======> UNRECOGNIZED OPTION: scan
+
+Use smartctl -h to get a usage summary
+

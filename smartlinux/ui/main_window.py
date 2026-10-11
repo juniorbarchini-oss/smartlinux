@@ -14,12 +14,14 @@ from ..core.config_manager import ConfigManager
 from ..core.exporter import ReportExporter
 from ..core.watcher import DeviceHotplugWatcher
 from ..core.history_manager import HistoryManager
+from ..core import usb_compat
 
 from .sidebar import SidebarWidget
 from .detail_panel import DetailPanel
 from .server_dialog import ServerDialog
 from .export_dialog import ExportDialog
 from .setup_dialog import SetupDependenciesDialog
+from .compat_dialog import CompatModeDialog
 
 
 class TaskWorker(QThread):
@@ -41,6 +43,26 @@ class TaskWorker(QThread):
             self.error_occurred.emit(str(e))
 
 
+class CompatModeWorker(QThread):
+    """Runs the USB compatibility-mode read (unmount -> Bulk-Only -> read -> restore -> remount)."""
+    progress = Signal(str)
+    result_ready = Signal(object)
+    error_occurred = Signal(str)
+
+    def __init__(self, candidate):
+        super().__init__()
+        self.candidate = candidate
+
+    def run(self):
+        try:
+            res = usb_compat.run_compat_read(
+                self.candidate, LocalDiskDetector.read_drive_smart, progress=self.progress.emit
+            )
+            self.result_ready.emit(res)
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+
+
 class MainWindow(QMainWindow):
     """Main Application Window for SmartLinux."""
 
@@ -56,6 +78,7 @@ class MainWindow(QMainWindow):
         self._ssh_clients: Dict[str, AutoSSHClient] = {}
         self._all_known_disks: Dict[str, DiskInfo] = {}
         self._last_preflight_issue: str = ""
+        self._compat_worker: Optional[CompatModeWorker] = None
 
         # Hotplug auto-detection watcher
         self._hotplug_watcher: Optional[DeviceHotplugWatcher] = None
@@ -125,6 +148,7 @@ class MainWindow(QMainWindow):
         self.detail_panel.export_requested.connect(self._open_export_dialog)
         self.detail_panel.eject_requested.connect(self._eject_local_disk)
         self.detail_panel.self_test_requested.connect(self._run_self_test)
+        self.detail_panel.compat_mode_requested.connect(self._on_compat_mode_requested)
         splitter.addWidget(self.detail_panel)
 
         splitter.setStretchFactor(0, 0)
@@ -220,6 +244,10 @@ class MainWindow(QMainWindow):
                     d.power_on_hours = cached.power_on_hours
                     d.power_cycles = cached.power_cycles
                     d.raw_json = cached.raw_json
+                    d.uas_candidate = cached.uas_candidate
+                    if cached.compat_read_note:
+                        d.compat_read_note = cached.compat_read_note
+                        d.model, d.serial, d.firmware = cached.model, cached.serial, cached.firmware
             self._all_known_disks[key] = d
             updated_drives.append(d)
 
@@ -352,7 +380,12 @@ class MainWindow(QMainWindow):
 
     def _do_read_single_disk(self, disk: DiskInfo) -> DiskInfo:
         if not disk.is_remote:
-            return LocalDiskDetector.read_drive_smart(disk.device_path)
+            local = LocalDiskDetector.read_drive_smart(disk.device_path)
+            try:
+                local.uas_candidate = usb_compat.detect_uas_smart_block(local)
+            except Exception as e:  # detection is best-effort and never blocks a scan
+                print(f"USB compatibility-mode detection failed: {e}")
+            return local
         else:
             server_id = disk.server_id
             srv = next((s for s in self._active_servers if s.id == server_id), None)
@@ -434,6 +467,84 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Failed to read disk: {error_msg}")
         QMessageBox.warning(self, "Read Error", f"Unable to read device telemetry:\n\n{error_msg}")
 
+    # ---------------- USB COMPATIBILITY MODE (UAS -> Bulk-Only, explicit consent) ----------------
+
+    def _on_compat_mode_requested(self, disk: DiskInfo):
+        candidate = disk.uas_candidate
+        if candidate is None or self._compat_worker is not None:
+            return
+        self.detail_panel.set_compat_busy(True, "Checking the drive...")
+        self._start_worker(
+            usb_compat.preflight,
+            on_result=lambda res: self._on_compat_preflight(disk, candidate, res),
+            on_error=self._on_compat_preflight_error,
+            candidate=candidate
+        )
+
+    def _on_compat_preflight_error(self, error_msg: str):
+        self.detail_panel.set_compat_busy(False)
+        QMessageBox.warning(self, "Compatibility Mode", f"Could not prepare compatibility mode:\n\n{error_msg}")
+
+    def _on_compat_preflight(self, disk: DiskInfo, candidate, result):
+        volumes, problems = result
+        self.detail_panel.set_compat_busy(False)
+        if problems:
+            QMessageBox.warning(
+                self, "Compatibility Mode Not Possible",
+                "SmartLinux will not switch this drive to compatibility mode:\n\n"
+                + "\n".join(f"• {p}" for p in problems)
+            )
+            return
+        if CompatModeDialog(candidate, volumes, self).exec() != CompatModeDialog.Accepted:
+            return  # Cancel: nothing was done
+
+        old_key = f"local_{disk.device_path}"
+        self.detail_panel.set_compat_busy(True, "Starting...")
+        self.status_bar.showMessage(f"Reading {disk.device_path} in USB compatibility mode...")
+        worker = CompatModeWorker(candidate)
+        self._compat_worker = worker
+        self._active_workers.add(worker)
+        worker.progress.connect(self._on_compat_progress)
+        worker.result_ready.connect(lambda res: self._on_compat_done(old_key, res))
+        worker.error_occurred.connect(self._on_compat_error)
+
+        def _cleanup():
+            self._active_workers.discard(worker)
+            self._compat_worker = None
+            worker.deleteLater()
+
+        worker.finished.connect(_cleanup)
+        worker.start()
+
+    def _on_compat_progress(self, message: str):
+        self.detail_panel.set_compat_busy(True, f"⏳ {message}")
+        self.status_bar.showMessage(message)
+
+    def _on_compat_done(self, old_key: str, result):
+        disk = result.disk
+        self.detail_panel.set_compat_busy(False)
+        self._all_known_disks.pop(old_key, None)
+        self._all_known_disks[f"local_{disk.device_path}"] = disk
+        HistoryManager.append_snapshot(disk)
+        self.detail_panel.display_disk(disk)
+        self.status_bar.showMessage(f"Compatibility-mode read complete: {disk.model} [{disk.health_status.label}].")
+        self._discover_local_drives()
+
+        notes = []
+        if not result.restored:
+            notes.append("The adapter could not be switched back to normal (UAS) mode"
+                         + (f" ({result.restore_error})" if result.restore_error else "")
+                         + ". Unplug and replug the drive (or reboot) to restore it.")
+        notes.extend(result.remount_warnings)
+        if notes:
+            QMessageBox.warning(self, "Compatibility Mode", "\n\n".join(notes))
+
+    def _on_compat_error(self, error_msg: str):
+        self.detail_panel.set_compat_busy(False)
+        self.status_bar.showMessage("Compatibility-mode read failed.")
+        self._discover_local_drives()
+        QMessageBox.warning(self, "Compatibility Mode Failed", error_msg)
+
     # ---------------- SAFE EJECT LOCAL USB DRIVE ----------------
 
     def _eject_local_disk(self, device_path: str):
@@ -489,6 +600,17 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage(f"Reports exported ({len(exported)} file(s)).")
 
     def closeEvent(self, event):
+        if self._compat_worker is not None and self._compat_worker.isRunning():
+            reply = QMessageBox.question(
+                self, "Compatibility Mode Running",
+                "A compatibility-mode read is still running. If you quit now, the USB adapter may "
+                "stay in compatibility mode until you reboot or unplug and replug the drive.\n\n"
+                "Quit anyway?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                event.ignore()
+                return
         if self._hotplug_watcher:
             try:
                 self._hotplug_watcher.stop()

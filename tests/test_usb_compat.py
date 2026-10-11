@@ -268,8 +268,9 @@ def test_guard_lists_processes_with_fuser_when_lsof_missing():
     assert "rsync (PID 99)" in problems[0] and "nautilus (PID 1234)" in problems[0]
 
 
-def test_preflight_reports_missing_helper(tmp_path):
-    vols, problems = preflight(candidate(), FakeRunner(), helper_path=str(tmp_path / "nope"))
+def test_preflight_reports_missing_helper(fake_sysfs, tmp_path):
+    fs = fake_sysfs()
+    vols, problems = preflight(candidate(), FakeRunner(), helper_path=str(tmp_path / "nope"), sysfs_root=fs.root)
     assert len(vols) == 3
     assert any("helper" in p and "not installed" in p for p in problems)
 
@@ -283,7 +284,21 @@ def test_tampered_candidate_is_rejected_before_any_command(fake_sysfs, over):
     with pytest.raises(CompatModeError):
         run_compat_read(candidate(**over), bot_disk, runner=runner, sysfs_root=fs.root)
     with pytest.raises(CompatModeError):
-        preflight(candidate(**over), runner)
+        preflight(candidate(**over), runner, sysfs_root=fs.root)
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize("change", ["replugged_elsewhere", "now_bulk_only", "other_device"])
+def test_stale_candidate_is_rejected(fake_sysfs, change):
+    if change == "replugged_elsewhere":
+        fs = fake_sysfs(block="sdb")   # /dev/sda is gone, the drive is /dev/sdb now
+    elif change == "now_bulk_only":
+        fs = fake_sysfs(driver="usb-storage")
+    else:
+        fs = fake_sysfs(pid="a021")
+    runner = FakeRunner(fs)
+    with pytest.raises(CompatModeError, match="Scan"):
+        run_compat_read(candidate(), bot_disk, runner=runner, sysfs_root=fs.root)
     assert runner.calls == []
 
 

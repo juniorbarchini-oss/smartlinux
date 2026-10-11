@@ -315,10 +315,25 @@ def check_guards(device_path: str, volumes: List[Volume], runner: Runner = defau
     return problems
 
 
-def preflight(candidate: UasCandidate, runner: Runner = default_runner,
-              helper_path: str = HELPER_PATH) -> Tuple[List[Volume], List[str]]:
-    """What the confirmation dialog shows: volumes that will be unmounted + refusals."""
+def verify_candidate(candidate: UasCandidate, sysfs_root: str = "/sys"):
+    """The disk must still be the same adapter, at the same port, still on uas
+    (it may have been unplugged or re-plugged since the scan)."""
     candidate.validate()
+    located = locate_usb_device(sysfs_root, _block_name(candidate.device_path))
+    if not located or located[1] != candidate.bus_id or located[2] != candidate.interface:
+        raise CompatModeError(f"{candidate.device_path} is no longer the scanned USB drive. Scan it again.")
+    usb_dir = located[0]
+    if (_read(os.path.join(usb_dir, "idVendor")).lower(), _read(os.path.join(usb_dir, "idProduct")).lower()) != \
+            (candidate.vid, candidate.pid):
+        raise CompatModeError(f"{candidate.device_path} is no longer the scanned USB drive. Scan it again.")
+    if interface_driver(usb_dir, candidate.interface) != UAS_DRIVER:
+        raise CompatModeError("The adapter is not in UAS mode any more. Scan the drive again.")
+
+
+def preflight(candidate: UasCandidate, runner: Runner = default_runner,
+              helper_path: str = HELPER_PATH, sysfs_root: str = "/sys") -> Tuple[List[Volume], List[str]]:
+    """What the confirmation dialog shows: volumes that will be unmounted + refusals."""
+    verify_candidate(candidate, sysfs_root)
     volumes = list_volumes(candidate.device_path, runner)
     problems = check_guards(candidate.device_path, volumes, runner)
     if not os.path.isfile(helper_path):
@@ -327,6 +342,32 @@ def preflight(candidate: UasCandidate, runner: Runner = default_runner,
             "SmartLinux installed from its package (.deb / Arch package / install.sh)."
         )
     return volumes, problems
+
+
+def describe_plan(candidate: UasCandidate, volumes: List[Volume]) -> List[Tuple[str, List[str]]]:
+    """Exactly what will happen, for the confirmation dialog: [(step, [details])]."""
+    mounted = [v for v in volumes if v.is_mounted]
+    if mounted:
+        unmount = ("These volumes will be unmounted (and mounted again at the end):",
+                   [v.describe() for v in mounted])
+    else:
+        unmount = ("No volume of this drive is mounted, so nothing needs to be unmounted.", [])
+    return [
+        unmount,
+        ("You will be asked for administrator permission (pkexec).", []),
+        (f"The drive will be disconnected and reconnected by software for about 20-30 seconds "
+         f"(adapter {candidate.name}, USB {candidate.usb_id}). Its /dev name "
+         f"({candidate.device_path}) may change.", []),
+        ("S.M.A.R.T. is read (read-only; no self-tests are run and nothing is written to the drive).", []),
+        ("Normal (UAS) mode is restored and the volumes are mounted again.", []),
+        ("Risks:", [
+            "The drive runs at reduced speed while in compatibility mode.",
+            "If SmartLinux is closed or crashes halfway, the adapter stays in compatibility mode "
+            "until you reboot or unplug and replug the drive.",
+            "The serial number the drive reports differs between modes, so this reading appears "
+            "under a separate entry in the History tab (SmartLinux keeps history per serial).",
+        ]),
+    ]
 
 
 # ------------------------------------------------------------------ flow
@@ -352,7 +393,7 @@ def run_compat_read(candidate: UasCandidate,
                     remount_timeout: float = 20.0,
                     automount_grace: float = 3.0) -> CompatReadResult:
     """unmount -> set-bot -> find new node -> read SMART -> restore (always) -> remount."""
-    candidate.validate()
+    verify_candidate(candidate, sysfs_root)
 
     progress("Checking that the drive is not in use...")
     volumes = list_volumes(candidate.device_path, runner)

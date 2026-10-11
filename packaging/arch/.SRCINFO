@@ -11,6 +11,9 @@ pkgbase = smartlinux
 	depends = python-keyring
 	depends = smartmontools
 	optdepends = putty: SSH to very old devices that only offer ssh-dss host keys
+	optdepends = polkit: USB compatibility mode (read SMART through adapters that hide it in UAS mode)
+	optdepends = udisks2: unmount/remount volumes for the USB compatibility mode
+	optdepends = lsof: show which programs keep a USB volume busy
 	source = smartlinux-1.1.0.tar.gz::https://github.com/juniorbarchini-oss/smartlinux/archive/refs/tags/v1.1.0.tar.gz
 	sha256sums = 96c59795fa708c5ce408dd9e387da6fc9b6f1e9e0d23d2a365d6d8d629a7e57c
 

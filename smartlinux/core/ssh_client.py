@@ -354,6 +354,11 @@ class AutoSSHClient:
     def collect_system_info(self):
         return self._ensure_engine().collect_system_info()
 
+    def vendor_host(self):
+        """perccli/storcli runner over this connection (read-only whitelist, see vendor_tools)."""
+        from .vendor_tools import RemoteHost
+        return RemoteHost(self._ensure_engine())
+
 
 def create_ssh_client(config: ServerConfig) -> AutoSSHClient:
     return AutoSSHClient(config)

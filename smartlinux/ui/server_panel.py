@@ -54,6 +54,7 @@ class ServerPanel(QWidget):
     refresh_requested = Signal(str)  # server_id ("" = this computer)
     vendor_mode_changed = Signal(str, str, str)  # server_id, controller PCI slot, mode
     disk_link_requested = Signal(str, str, str)  # server_id, "smartctl" | "os_drive", value
+    diagnostic_requested = Signal(str)           # server_id: open the "Export diagnostic bundle" dialog
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -83,6 +84,11 @@ class ServerPanel(QWidget):
         self.collected_lbl = QLabel("")
         self.collected_lbl.setStyleSheet("font-size: 12px; color: #8b949e;")
         title_row.addWidget(self.collected_lbl)
+        self.diag_btn = QPushButton("Export diagnostic bundle…")
+        self.diag_btn.setToolTip("Run a fixed list of read-only commands, sanitize the output and save "
+                                 "it as a .zip you can give to the developer (nothing is sent)")
+        self.diag_btn.clicked.connect(lambda: self.diagnostic_requested.emit(self.server_id or ""))
+        title_row.addWidget(self.diag_btn)
         self.refresh_btn = QPushButton("↻ Refresh")
         self.refresh_btn.setObjectName("PrimaryButton")
         self.refresh_btn.setToolTip("Reconnect, list drives and read the server information again")

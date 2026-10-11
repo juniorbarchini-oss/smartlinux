@@ -1,4 +1,6 @@
+import getpass
 import os
+import socket
 import subprocess
 import time
 from typing import List, Optional, Set, Dict, Tuple
@@ -22,6 +24,7 @@ from ..core import usb_compat
 from ..core import raid
 from ..core import system_info
 from ..core import vendor_tools
+from ..core import diagnostics
 
 from .sidebar import SidebarWidget
 from .detail_panel import DetailPanel
@@ -30,6 +33,7 @@ from .server_dialog import ServerDialog
 from .export_dialog import ExportDialog
 from .setup_dialog import SetupDependenciesDialog
 from .compat_dialog import CompatModeDialog
+from .diagnostic_dialog import DiagnosticBundleDialog
 
 
 class TaskWorker(QThread):
@@ -199,6 +203,7 @@ class MainWindow(QMainWindow):
         self.server_panel.refresh_requested.connect(self._on_server_panel_refresh)
         self.server_panel.vendor_mode_changed.connect(self._on_vendor_mode_changed)
         self.server_panel.disk_link_requested.connect(self._on_vendor_disk_link)
+        self.server_panel.diagnostic_requested.connect(self._on_diagnostic_requested)
         self.detail_stack.addWidget(self.server_panel)
         splitter.addWidget(self.detail_stack)
 
@@ -589,6 +594,57 @@ class MainWindow(QMainWindow):
         self._on_host_selected(server_id)
         if mode == vendor_tools.MODE_VENDOR and not (state and state.report):
             self.status_bar.showMessage("Vendor tool selected: click Refresh to read the controller (read-only).")
+
+    # ---------------- DIAGNOSTIC BUNDLE (read-only, sanitized, saved locally only) ----------------
+
+    def _diagnostic_disks(self, server_id: str) -> List[DiskInfo]:
+        """The host's listed disks, with their latest reading when there is one."""
+        listed = self._host_drives.get(server_id, [])
+        return [self._all_known_disks.get(d.host_key, d) for d in listed]
+
+    def _make_diagnostic_job(self, server_id: str, disks: List[DiskInfo]):
+        info = self._system_info.get(server_id)
+        vendor_states = self._vendor_states.get(server_id)
+        srv = next((s for s in self._active_servers if s.id == server_id), None) if server_id else None
+
+        def job(progress, cancelled):
+            if srv is None:
+                host = diagnostics.LocalDiagHost()
+                device_types, text_mode = {}, False
+                names = [socket.gethostname(), info.hostname if info else None]
+                users = [getpass.getuser()]
+            else:
+                client = self._ssh_clients.get(server_id)
+                if not client or not client.is_connected():
+                    progress(f"Connecting to {srv.name}…")
+                    client = create_ssh_client(srv)
+                    ok, msg = client.connect(timeout=8)
+                    if not ok:
+                        raise RuntimeError(msg)
+                    self._ssh_clients[server_id] = client
+                engine = client._ensure_engine()
+                host = diagnostics.RemoteDiagHost(engine, client.engine_name)
+                device_types = dict(getattr(engine, "_device_types", {}) or {})
+                text_mode = bool(getattr(engine, "uses_text_mode", False))
+                names = [srv.name, srv.host, info.hostname if info else None]
+                users = [srv.username]
+            results = diagnostics.Collector(host, progress, cancelled).collect(disks, device_types, text_mode)
+            progress("Sanitizing and checking every file…")
+            view = diagnostics.build_app_view(__version__, host.engine, disks, info, vendor_states)
+            known = diagnostics.known_identifiers(names, users, disks)
+            return diagnostics.build_bundle(results, view, __version__, host.engine,
+                                            info.model_line if info else None, known)
+        return job
+
+    def _on_diagnostic_requested(self, server_id: str):
+        disks = self._diagnostic_disks(server_id)
+        srv = next((s for s in self._active_servers if s.id == server_id), None) if server_id else None
+        label = f"{srv.name} ({srv.host})" if srv else "this computer"
+        engine = getattr(self._ssh_clients.get(server_id), "_engine", None) if server_id else None
+        commands = diagnostics.planned_commands(disks, dict(getattr(engine, "_device_types", {}) or {}),
+                                                bool(getattr(engine, "uses_text_mode", False)))
+        dialog = DiagnosticBundleDialog(label, commands, self._make_diagnostic_job(server_id, disks), self)
+        dialog.exec()
 
     def _on_vendor_disk_link(self, server_id: str, kind: str, value: str):
         for disk in self._host_drives.get(server_id, []):

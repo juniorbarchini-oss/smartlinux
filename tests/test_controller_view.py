@@ -370,8 +370,8 @@ def test_export_button_opens_the_controller_report_dialog(env, monkeypatch, tmp_
     doc = seen["document"]
     assert doc.title.startswith("RAID controller report")
     headings = [b.text for b in doc.blocks if isinstance(b, controller_report.Heading) and b.level == 2]
-    assert headings[:3] == ["1. Summary", "2. Findings", "3. Controller"]
-    assert "8. What was read, and how" in headings
+    assert headings[:3] == ["1. Equipment", "2. Diagnosis", "3. Volumes"]
+    assert "7. What was read, and how" in headings
 
 
 def test_controller_report_findings_carry_their_evidence(env, tmp_path):
@@ -386,7 +386,7 @@ def test_controller_report_findings_carry_their_evidence(env, tmp_path):
     md = controller_report.to_markdown(doc)
     page = controller_report.to_html(doc)
     for text in (md, page):
-        assert "Summary" in text and "Physical disks" in text and "does not predict failures" in text
+        assert "Equipment" in text and "Physical disks" in text and "does not predict failures" in text
     preview = os.environ.get("SMARTLINUX_PREVIEW_DIR")
     if preview:                                                    # manual look at the real layout
         ok, paths = controller_report.export_files(doc, preview, ["pdf", "html", "md"], "r630")

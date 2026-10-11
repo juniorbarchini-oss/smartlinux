@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from ..core.models import DiskInfo, HealthStatus
+from ..core.raid import VIRTUAL_SUMMARY
 from .history_tab import HistoryTab
 from .scan_state import SCAN_NOW_TEXT, scan_action_text, format_last_scanned
 
@@ -264,6 +265,8 @@ class DetailPanel(QWidget):
         self.scan_btn.setEnabled(not self._compat_busy)
         self.export_btn.setEnabled(True)
         self.self_test_btn.setEnabled(not self._compat_busy)
+        self.scan_btn.setVisible(not disk.is_virtual)
+        self.self_test_btn.setVisible(not disk.is_virtual)
         self.scan_btn.setText(scan_action_text(disk))
         self.last_scanned_lbl.setText(format_last_scanned(disk.last_scanned))
 
@@ -277,12 +280,31 @@ class DetailPanel(QWidget):
         usb_hint = " [USB Drive]" if disk.is_usb else ""
         self.model_lbl.setText(f"{host_tag}{disk.model} ({disk.size_human}){usb_hint}")
         
+        if disk.is_virtual:
+            self._display_virtual(disk)
+            return
+
+        path = escape(disk.device_path)
+        if disk.uid != disk.device_path:
+            path += f" -d {escape(disk.smart_dev_type)}"
         info_text = (
-            f"Path: <b>{disk.device_path}</b> &nbsp;|&nbsp; "
-            f"S/N: <b>{disk.serial}</b> &nbsp;|&nbsp; "
-            f"Firmware: <b>{disk.firmware}</b> &nbsp;|&nbsp; "
-            f"Type: <b>{disk.protocol} ({disk.rotation_rate})</b>"
+            f"Path: <b>{path}</b> &nbsp;|&nbsp; "
+            f"S/N: <b>{escape(disk.serial)}</b> &nbsp;|&nbsp; "
+            f"Firmware: <b>{escape(disk.firmware)}</b> &nbsp;|&nbsp; "
+            f"Type: <b>{escape(disk.protocol)} ({escape(disk.rotation_rate)})</b>"
         )
+        extra = []
+        if disk.vendor:
+            extra.append(f"Vendor: <b>{escape(disk.vendor)}</b>")
+        if disk.transport:
+            extra.append(f"Transport: <b>{escape(disk.transport)}</b>")
+        if disk.form_factor:
+            extra.append(f"Form factor: <b>{escape(disk.form_factor)}</b>")
+        if disk.controller:
+            slot = f", slot {disk.slot}" if disk.slot is not None else ""
+            extra.append(f"Controller: <b>{escape(disk.controller)}{slot}</b>")
+        if extra:
+            info_text += "<br>" + " &nbsp;|&nbsp; ".join(extra)
         self.info_lbl.setText(info_text)
 
         # Last Self-Test result (set by 'Self-Test' button + a later 'Refresh')
@@ -364,7 +386,8 @@ class DetailPanel(QWidget):
                 self.hours_card.update_data("N/A", sub)
 
         if disk.power_cycles is not None:
-            self.cycles_card.update_data(f"{disk.power_cycles:,}", "Recorded power-on cycles")
+            cycles_sub = "Start/stop cycles" if disk.transport else "Recorded power-on cycles"
+            self.cycles_card.update_data(f"{disk.power_cycles:,}", cycles_sub)
         else:
             if not disk.attributes:
                 self.cycles_card.update_data("---", "Click 'Scan Now'")
@@ -376,6 +399,34 @@ class DetailPanel(QWidget):
         self._populate_table(disk)
 
         # History tab (reads local JSONL history for this disk's serial)
+        self.history_tab.load_history(disk)
+
+    def _display_virtual(self, disk: DiskInfo):
+        """RAID volume: size and controller only. No scan, no self-test, no invented health."""
+        self.scan_btn.setEnabled(False)
+        self.self_test_btn.setEnabled(False)
+        self.last_scanned_lbl.setText("")
+        controller = escape(disk.controller or "a RAID controller")
+        self.info_lbl.setText(
+            f"Path: <b>{escape(disk.device_path)}</b> &nbsp;|&nbsp; Size: <b>{escape(disk.size_human)}</b>"
+            f" &nbsp;|&nbsp; Controller: <b>{controller}</b><br>"
+            f"Logical volume of the controller: it has no S.M.A.R.T. data of its own. "
+            f"Check the physical disks listed under the controller."
+        )
+        self.self_test_status_lbl.setText("Last Self-Test: not applicable (virtual drive)")
+        self.self_test_status_lbl.setStyleSheet("font-size: 13px; color: #8b949e; font-weight: 600;")
+        self.compat_note_banner.setVisible(False)
+        self.compat_notice.setVisible(False)
+        self.table.setVisible(True)
+        self.error_banner.setVisible(False)
+        self.health_badge.setText(f"▫️  {VIRTUAL_SUMMARY.upper()}")
+        self.health_badge.setStyleSheet(
+            "background-color: #21262d; color: #8b949e; border: 1px solid #30363d; "
+            "font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 12px;"
+        )
+        for card in (self.temp_card, self.hours_card, self.cycles_card):
+            card.update_data("—", "Not applicable (virtual drive)")
+        self._populate_table(disk)
         self.history_tab.load_history(disk)
 
     @staticmethod
@@ -391,7 +442,7 @@ class DetailPanel(QWidget):
         self.compat_btn.setText("⏳ Working…" if busy else "Read SMART in compatibility mode…")
         self.compat_progress_lbl.setText(message)
         for btn in (self.scan_btn, self.self_test_btn, self.eject_btn):
-            btn.setEnabled(not busy and self.current_disk is not None)
+            btn.setEnabled(not busy and self.current_disk is not None and not self.current_disk.is_virtual)
 
     def _update_health_badge(self, disk: DiskInfo):
         if not disk.attributes and disk.health_status == HealthStatus.UNKNOWN:

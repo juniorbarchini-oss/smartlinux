@@ -1,6 +1,12 @@
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional, Dict, Any
+
+
+# smartctl -d types that address one physical disk behind a RAID controller
+# ("megaraid,3", "sat+megaraid,3", "cciss,0", ...). Bridge types such as "sat,12" are not.
+PASSTHROUGH_TYPE_RE = re.compile(r"^(?:sat\+)?(megaraid|cciss|aacraid|areca|3ware|hpt|sssraid),(\d+)", re.I)
 
 
 class HealthStatus(str, Enum):
@@ -83,6 +89,39 @@ class DiskInfo:
     compat_read_note: Optional[str] = None
     # Epoch time of the last manual SMART read in this session (None = not scanned yet)
     last_scanned: Optional[float] = None
+    # smartctl -d type from `smartctl --scan` when it is needed to address the disk
+    # (e.g. "megaraid,3" for a physical disk behind a MegaRAID/PERC controller)
+    smart_dev_type: Optional[str] = None
+    # Human-readable controller the disk belongs to, e.g. "PERC H730 Mini (MegaRAID)"
+    controller: Optional[str] = None
+    # Physical slot / device id on that controller (the N of megaraid,N)
+    slot: Optional[int] = None
+    # Logical volume exported by a RAID controller: no SMART of its own
+    is_virtual: bool = False
+    # SAS/SCSI identity details (filled from smartctl when available)
+    vendor: Optional[str] = None
+    form_factor: Optional[str] = None
+    transport: Optional[str] = None
+
+    @property
+    def uid(self) -> str:
+        """Unique id of this disk on its host. Several physical disks behind one RAID
+        controller share a device_path (/dev/bus/0); the -d type tells them apart."""
+        if self.smart_dev_type and PASSTHROUGH_TYPE_RE.match(self.smart_dev_type):
+            return f"{self.device_path}#{self.smart_dev_type}"
+        return self.device_path
+
+    @property
+    def display_path(self) -> str:
+        """Device path as smartctl needs it, e.g. "/dev/bus/0 -d megaraid,3"."""
+        if self.uid != self.device_path:
+            return f"{self.device_path} -d {self.smart_dev_type}"
+        return self.device_path
+
+    @property
+    def host_key(self) -> str:
+        """Unique id of this disk across all hosts SmartLinux knows."""
+        return f"{self.server_id or 'local'}_{self.uid}"
 
     @property
     def display_title(self) -> str:

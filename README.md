@@ -257,6 +257,32 @@ the source tree). Optional tools: `udisks2`, `polkit`/`pkexec`, `lsof`.
 
 ---
 
+## 🗄️ RAID controllers (MegaRAID/PERC)
+
+Behind a hardware RAID controller (LSI/Broadcom **MegaRAID**, Dell **PERC**) the operating system only sees
+**virtual drives** (`/dev/sda`, model e.g. "PERC H730 Mini"): they have no SMART of their own. The physical
+disks are only reachable as `smartctl -d megaraid,N /dev/bus/H`, which `smartctl --scan` lists.
+
+- SmartLinux keeps the `-d` type of every scan entry, so the physical disks that share `/dev/bus/0` are
+  listed (and remembered) one by one, grouped under their controller in the sidebar
+  ("PERC H730 Mini (MegaRAID) — 5 physical, 4 virtual"). Virtual drives go in their own group, with their
+  size, and are never sent to smartctl.
+- A scan reads `smartctl -j -a -d megaraid,N /dev/bus/H` (then `-d sat+megaraid,N` for SATA disks).
+  SAS disks show health status, temperature, power-on time, start/stop cycles, **grown defect list**,
+  corrected/uncorrected read/write/verify errors, non-medium errors and the self-test log. Health: a
+  status other than OK is **FAILED**; grown defects or uncorrected errors are a **WARNING** (with the
+  count); corrected and non-medium errors alone are normal on SAS.
+- Selecting **Local Drives** or a server shows the **Server** panel: model, service tag (needs root),
+  CPU, RAM, OS / Proxmox VE version, kernel, uptime and a **Storage controllers** table (driver and
+  version, physical and virtual disks per controller; firmware only if the system reports it). It is read
+  from `/sys`, `/proc`, `lscpu`, `lspci`, `modinfo`, `pveversion` and `dmidecode` when you connect or
+  refresh a host (locally: at startup and on Refresh, not on hotplug), and every value is optional.
+
+Read-only: SmartLinux never runs `storcli`/`perccli`/`MegaCli` and never changes the RAID configuration.
+Empty slots are not listed (smartctl does not report them).
+
+---
+
 ## 📂 Project Architecture
 
 ```text
@@ -268,7 +294,9 @@ smartlinux/
 │   │   ├── models.py           # Data models (DiskInfo, SmartAttribute, ServerConfig)
 │   │   ├── detector.py         # Local disk discovery and safe ejection
 │   │   ├── history_manager.py  # On-demand JSON Lines health snapshot log (~/.local/share/)
-│   │   ├── smart_parser.py     # ATA/SATA and NVMe SMART JSON parser & threshold evaluator
+│   │   ├── smart_parser.py     # ATA/SATA, NVMe and SAS/SCSI SMART JSON parser & threshold evaluator
+│   │   ├── raid.py             # RAID controllers: -d megaraid,N disks, virtual drive detection
+│   │   ├── system_info.py      # Read-only host identity and storage controllers (local / SSH)
 │   │   ├── ssh_client.py       # Hardened paramiko client + automatic engine selection (AutoSSHClient)
 │   │   ├── plink_client.py     # Legacy SSH engine on PuTTY plink (ssh-dss devices)
 │   │   ├── remote_common.py    # Transport-independent smartctl / discovery logic (JSON + text mode)
@@ -282,6 +310,7 @@ smartlinux/
 │   │   ├── main_window.py      # Main window & background worker orchestration
 │   │   ├── sidebar.py          # Device tree with health badges and context menus
 │   │   ├── detail_panel.py     # Telemetry metric cards, self-test actions and attribute table
+│   │   ├── server_panel.py     # Server identity card and storage controller table
 │   │   ├── history_tab.py      # Historical SMART attribute delta and degradation viewer
 │   │   ├── server_dialog.py    # Remote SSH server configuration & host key approval modal
 │   │   ├── export_dialog.py    # Multi-disk and multi-format export dialog
@@ -299,6 +328,7 @@ smartlinux/
 │   ├── test_legacy_remote.py       # Simulated WD My Cloud EX4: discovery, text mode, self-test
 │   ├── test_legacy_ssh_engine.py   # plink engine and paramiko→plink automatic selection
 │   ├── test_usb_compat*.py         # USB compatibility mode on a fake sysfs (detection, guards, flow, UI)
+│   ├── test_megaraid*.py           # Dell R630 / PERC H730 captures: discovery, SAS health, server info, UI
 │   └── test_usb_mode_helper.py     # Root helper: argument checks, quirks editing, idempotence
 ├── smartlinux.sh               # One-click launcher script
 ├── install.sh                  # System desktop & icon installer

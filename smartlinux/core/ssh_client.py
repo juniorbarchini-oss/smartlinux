@@ -342,14 +342,17 @@ class AutoSSHClient:
     def exec_smartctl(self, args: str, timeout: int = 15):
         return self._ensure_engine().exec_smartctl(args, timeout=timeout)
 
-    def run_self_test(self, device_path: str, test_type: str = "short"):
-        return self._ensure_engine().run_self_test(device_path, test_type)
+    def run_self_test(self, device_path: str, test_type: str = "short", dev_type=None):
+        return self._ensure_engine().run_self_test(device_path, test_type, dev_type=dev_type)
 
     def discover_remote_drives(self):
         return self._ensure_engine().discover_remote_drives()
 
-    def read_remote_drive_smart(self, device_path: str):
-        return self._ensure_engine().read_remote_drive_smart(device_path)
+    def read_remote_drive_smart(self, device_path: str, dev_type=None):
+        return self._ensure_engine().read_remote_drive_smart(device_path, dev_type=dev_type)
+
+    def collect_system_info(self):
+        return self._ensure_engine().collect_system_info()
 
 
 def create_ssh_client(config: ServerConfig) -> AutoSSHClient:

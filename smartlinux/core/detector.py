@@ -5,7 +5,8 @@ import shutil
 import subprocess
 from typing import List, Tuple, Optional
 from .models import DiskInfo, HealthStatus
-from .smart_parser import SmartParser, SMART_DEVICE_TYPES, reading_quality, reading_rank
+from .smart_parser import SmartParser, SMART_DEVICE_TYPES, reading_quality, reading_rank, format_bytes_commercial
+from . import raid
 
 
 class LocalDiskDetector:
@@ -81,7 +82,7 @@ class LocalDiskDetector:
         # Linux Specific Tier 1: lsblk (Rich metadata including TRAN=usb)
         if not is_darwin:
             try:
-                cmd = ["lsblk", "-J", "-d", "-o", "NAME,PATH,MODEL,SIZE,TRAN,TYPE,ROTA,HOTPLUG,RM"]
+                cmd = ["lsblk", "-J", "-d", "-o", "NAME,PATH,MODEL,SIZE,TRAN,TYPE,ROTA,HOTPLUG,RM,VENDOR"]
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
                 if proc.returncode == 0 and proc.stdout.strip():
                     data = json.loads(proc.stdout)
@@ -110,38 +111,65 @@ class LocalDiskDetector:
                             protocol=tran if tran else "ATA/SATA",
                             is_usb=(tran == "USB" or is_rm)
                         )
+                        if raid.is_virtual_raid_model(disk.model, dev.get("vendor")):
+                            raid.mark_virtual(disk)
                         drives.append(disk)
             except Exception as e:
                 print(f"Error enumerating drives with lsblk: {e}")
 
-        # Universal Tier 2: smartctl --scan -j
-        if not drives:
-            try:
-                proc = subprocess.run([smartctl_bin, "--scan", "-j"], capture_output=True, text=True, timeout=5)
-                if proc.returncode == 0 and proc.stdout.strip():
-                    data = json.loads(proc.stdout)
-                    for dev in data.get("devices", []):
-                        dev_name = dev.get("name", "")
-                        if not dev_name:
-                            continue
-                        if any(x in dev_name for x in ["/loop", "/ram", "/zram", "/dm-", "/sr"]):
-                            continue
-                        
-                        protocol = dev.get("protocol", "SATA").upper()
-                        is_usb = ("USB" in protocol or "usb" in dev_name)
+        # Universal Tier 2: smartctl --scan -j. Also run next to lsblk: physical disks behind
+        # a RAID controller (-d megaraid,N /dev/bus/0) are invisible to lsblk.
+        scan_json = cls._scan_json(smartctl_bin)
+        entries = raid.scan_entries(scan_json)
+        if drives:
+            for entry in entries:
+                if raid.is_passthrough_type(entry["type"]):
+                    drives.append(raid.disk_from_scan_entry(entry, cls._new_disk))
+        else:
+            for entry in entries:
+                disk = raid.disk_from_scan_entry(entry, cls._new_disk)
+                if not raid.is_passthrough_type(disk.smart_dev_type):
+                    cls._apply_sysfs_identity(disk)
+                drives.append(disk)
 
-                        disk = DiskInfo(
-                            device_path=dev_name,
-                            name=dev_name.split("/")[-1],
-                            model="Physical Drive",
-                            protocol=protocol,
-                            is_usb=is_usb
-                        )
-                        drives.append(disk)
-            except Exception as e:
-                print(f"Error scanning with smartctl: {e}")
-
+        raid.harmonize_controller_labels(drives)
         return drives
+
+    @staticmethod
+    def _new_disk(device_path: str, **kwargs) -> DiskInfo:
+        return DiskInfo(device_path=device_path, name=device_path.split("/")[-1], **kwargs)
+
+    @staticmethod
+    def _scan_json(smartctl_bin: str) -> Optional[dict]:
+        try:
+            proc = subprocess.run([smartctl_bin, "--scan", "-j"], capture_output=True, text=True, timeout=5)
+            if proc.returncode == 0 and proc.stdout.strip():
+                return json.loads(proc.stdout)
+        except Exception as e:
+            print(f"Error scanning with smartctl: {e}")
+        return None
+
+    @staticmethod
+    def _apply_sysfs_identity(disk: DiskInfo):
+        """Model/vendor/size of a scanned block device from /sys/block (no lsblk)."""
+        base = f"/sys/block/{disk.device_path.split('/')[-1]}"
+
+        def read(rel: str) -> str:
+            try:
+                with open(os.path.join(base, rel)) as f:
+                    return f.read().strip()
+            except OSError:
+                return ""
+
+        model, vendor = read("device/model"), read("device/vendor")
+        if model:
+            disk.model = model
+        size_bytes = raid.sectors_to_bytes(read("size"))
+        if size_bytes:
+            disk.size_bytes = size_bytes
+            disk.size_human = format_bytes_commercial(size_bytes)
+        if raid.is_virtual_raid_model(model, vendor):
+            raid.mark_virtual(disk)
 
     @classmethod
     def check_is_usb(cls, device_path: str) -> bool:
@@ -157,21 +185,25 @@ class LocalDiskDetector:
         return False
 
     @classmethod
-    def read_drive_smart(cls, device_path: str) -> DiskInfo:
-        """Reads and parses full SMART data for a specific local drive with intelligent bridge fallback."""
+    def read_drive_smart(cls, device_path: str, dev_type: Optional[str] = None) -> DiskInfo:
+        """Reads and parses full SMART data for a specific local drive with intelligent bridge fallback.
+
+        ``dev_type`` is the explicit -d type from the scan for disks behind a RAID controller
+        (e.g. "megaraid,3"); then only that type (and its SAT variant) is tried."""
         smartctl_bin = cls.get_smartctl_bin()
-        device_types = SMART_DEVICE_TYPES
-        is_usb = cls.check_is_usb(device_path)
+        explicit = raid.is_passthrough_type(dev_type)
+        device_types = raid.read_types_for(dev_type) if explicit else SMART_DEVICE_TYPES
+        is_usb = False if explicit else cls.check_is_usb(device_path)
         
         last_error = ""
         best_disk = None
         best_quality = (False, 0)
 
-        for dev_type in device_types:
+        for try_type in device_types:
             try:
                 cmd = [smartctl_bin, "-j"]
-                if dev_type:
-                    cmd.extend(["-d", dev_type])
+                if try_type:
+                    cmd.extend(["-d", try_type])
                 cmd.extend(["-a", device_path])
                 
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
@@ -183,6 +215,8 @@ class LocalDiskDetector:
                             disk = SmartParser.parse_smart_json(data, device_path)
                             if is_usb:
                                 disk.is_usb = True
+                            if explicit:
+                                cls._stamp_passthrough(disk, dev_type)
                             if quality == 2 and disk.health_status != HealthStatus.UNKNOWN and disk.size_bytes > 0:
                                 return disk
                             if best_disk is None or reading_rank(quality, disk.size_bytes) > best_quality:
@@ -208,10 +242,21 @@ class LocalDiskDetector:
             health_summary="SMART telemetry not available",
             error_message=last_error or "Unsupported device bridge or command failed"
         )
+        if explicit:
+            cls._stamp_passthrough(disk, dev_type)
         return disk
 
+    @staticmethod
+    def _stamp_passthrough(disk: DiskInfo, dev_type: str):
+        """Keeps a RAID-attached disk addressable after a read: same -d type, slot and name
+        as listed, whatever variant (sat+megaraid,N) actually answered."""
+        disk.smart_dev_type = dev_type
+        disk.slot = raid.slot_from_type(dev_type)
+        disk.name = raid.physical_name(dev_type)
+
     @classmethod
-    def run_self_test(cls, device_path: str, test_type: str = "short") -> Tuple[bool, str]:
+    def run_self_test(cls, device_path: str, test_type: str = "short",
+                      dev_type: Optional[str] = None) -> Tuple[bool, str]:
         """Triggers the drive's own native self-test (smartctl -t short|long).
 
         Only queues the test on the disk's own controller and returns immediately;
@@ -221,8 +266,9 @@ class LocalDiskDetector:
         smartctl_bin = cls.get_smartctl_bin()
         mode = "long" if test_type == "long" else "short"
         try:
+            opt = ["-d", dev_type] if raid.is_passthrough_type(dev_type) else []
             proc = subprocess.run(
-                [smartctl_bin, "-t", mode, device_path],
+                [smartctl_bin, *opt, "-t", mode, device_path],
                 capture_output=True, text=True, timeout=15
             )
             output = (proc.stdout or "") + (proc.stderr or "")

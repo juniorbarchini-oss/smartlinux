@@ -6,7 +6,13 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from ..core.models import DiskInfo, ServerConfig, HealthStatus
+from ..core.raid import VIRTUAL_GROUP, VIRTUAL_SUMMARY
 from .scan_state import scan_action_text
+
+
+def controller_group_label(name: str, physical: int, virtual: int) -> str:
+    """e.g. "PERC H730 Mini (MegaRAID) — 5 physical, 4 virtual"."""
+    return f"{name} — {physical} physical, {virtual} virtual"
 
 
 class SidebarWidget(QWidget):
@@ -19,12 +25,14 @@ class SidebarWidget(QWidget):
     server_refresh_requested = Signal(str)      # Emits server_id
     local_refresh_requested = Signal()          # Refresh local drives
     eject_requested = Signal(str)               # Emits device_path for local USB drive
+    host_selected = Signal(str)                 # Emits server_id ("" = this computer): show the Server panel
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumWidth(300)
         self.setMaximumWidth(400)
 
+        # keyed by DiskInfo.uid: RAID-attached disks share a device_path (/dev/bus/0)
         self._local_drives: Dict[str, DiskInfo] = {}
         self._remote_drives: Dict[str, Dict[str, DiskInfo]] = {}
         self._servers: Dict[str, ServerConfig] = {}
@@ -95,45 +103,95 @@ class SidebarWidget(QWidget):
             return
 
         for disk in disks:
-            self._local_drives[disk.device_path] = disk
-            item = QTreeWidgetItem(self.local_root)
-            self._update_disk_item(item, disk)
+            self._local_drives[disk.uid] = disk
+        self._populate_disks(self.local_root, disks, None)
+
+    def _populate_disks(self, parent: QTreeWidgetItem, disks: List[DiskInfo], server_id: Optional[str]):
+        """Plain disks first (non-RAID hosts look as before), then the physical disks of
+        each RAID controller under it, then the controllers' virtual drives in their own group."""
+        plain = [d for d in disks if not d.is_virtual and not d.controller]
+        virtual = [d for d in disks if d.is_virtual]
+        groups: Dict[str, List[DiskInfo]] = {}
+        for d in disks:
+            if not d.is_virtual and d.controller:
+                groups.setdefault(d.controller, []).append(d)
+        for disk in plain:
+            self._update_disk_item(QTreeWidgetItem(parent), disk)
+
+        bold = parent.font(0)
+        bold.setBold(True)
+        for name, members in groups.items():
+            n_virtual = sum(1 for d in virtual if d.controller == name)
+            grp = QTreeWidgetItem(parent)
+            grp.setText(0, f"🎛️  {controller_group_label(name, len(members), n_virtual)}")
+            grp.setToolTip(0, f"{controller_group_label(name, len(members), n_virtual)}\n"
+                              f"Physical disks behind this RAID controller (read with smartctl -d)")
+            grp.setData(0, Qt.UserRole, {"type": "controller_group", "server_id": server_id, "controller": name})
+            for disk in sorted(members, key=lambda d: (d.slot is None, d.slot or 0)):
+                self._update_disk_item(QTreeWidgetItem(grp), disk)
+            grp.setExpanded(True)
+
+        if virtual:
+            grp = QTreeWidgetItem(parent)
+            grp.setText(0, f"🧩  {VIRTUAL_GROUP} — {len(virtual)}")
+            grp.setToolTip(0, "Logical volumes exported by the RAID controller. They have no S.M.A.R.T. "
+                              "of their own: check the physical disks above.")
+            grp.setData(0, Qt.UserRole, {"type": "virtual_group", "server_id": server_id})
+            for disk in virtual:
+                self._update_disk_item(QTreeWidgetItem(grp), disk)
+            grp.setExpanded(True)
+
+    @classmethod
+    def _find_disk_item(cls, parent: QTreeWidgetItem, uid: str) -> Optional[QTreeWidgetItem]:
+        for i in range(parent.childCount()):
+            item = parent.child(i)
+            data = item.data(0, Qt.UserRole) or {}
+            if data.get("type") == "disk" and data.get("uid") == uid:
+                return item
+            found = cls._find_disk_item(item, uid)
+            if found:
+                return found
+        return None
 
     def update_disk_info(self, disk: DiskInfo):
         if not disk.is_remote:
-            self._local_drives[disk.device_path] = disk
-            for i in range(self.local_root.childCount()):
-                item = self.local_root.child(i)
-                data = item.data(0, Qt.UserRole)
-                if data and data.get("device_path") == disk.device_path:
-                    self._update_disk_item(item, disk)
-                    break
+            self._local_drives[disk.uid] = disk
+            item = self._find_disk_item(self.local_root, disk.uid)
+            if item:
+                self._update_disk_item(item, disk)
         else:
             server_id = disk.server_id
             if server_id and server_id in self._remote_drives:
-                self._remote_drives[server_id][disk.device_path] = disk
+                self._remote_drives[server_id][disk.uid] = disk
                 for s_idx in range(self.remote_root.childCount()):
                     srv_item = self.remote_root.child(s_idx)
                     s_data = srv_item.data(0, Qt.UserRole)
                     if s_data and s_data.get("server_id") == server_id:
-                        for d_idx in range(srv_item.childCount()):
-                            item = srv_item.child(d_idx)
-                            d_data = item.data(0, Qt.UserRole)
-                            if d_data and d_data.get("device_path") == disk.device_path:
-                                self._update_disk_item(item, disk)
-                                break
+                        item = self._find_disk_item(srv_item, disk.uid)
+                        if item:
+                            self._update_disk_item(item, disk)
+                        break
 
     def _update_disk_item(self, item: QTreeWidgetItem, disk: DiskInfo):
-        icon_str = disk.health_status.icon if disk.attributes else "⚪"
-        usb_tag = " [USB 🔌]" if disk.is_usb else ""
         size_hint = f" ({disk.size_human})" if disk.size_human and disk.size_human != "Unknown" else ""
-        label = f"{icon_str}  {disk.name} • {disk.model}{size_hint}{usb_tag}"
+        if disk.is_virtual:
+            label = f"▫️  {disk.name} • {VIRTUAL_SUMMARY}{size_hint}"
+            item.setToolTip(0, f"{disk.model} — logical volume of {disk.controller or 'a RAID controller'}; "
+                               f"no S.M.A.R.T. of its own")
+        else:
+            icon_str = disk.health_status.icon if disk.attributes else "⚪"
+            usb_tag = " [USB 🔌]" if disk.is_usb else ""
+            label = f"{icon_str}  {disk.name} • {disk.model}{size_hint}{usb_tag}"
+            if disk.smart_dev_type and disk.uid != disk.device_path:
+                item.setToolTip(0, f"smartctl -d {disk.smart_dev_type} {disk.device_path}")
         item.setText(0, label)
         item.setData(0, Qt.UserRole, {
             "type": "disk",
             "device_path": disk.device_path,
+            "uid": disk.uid,
             "is_remote": disk.is_remote,
             "is_usb": disk.is_usb,
+            "is_virtual": disk.is_virtual,
             "server_id": disk.server_id
         })
 
@@ -186,10 +244,9 @@ class SidebarWidget(QWidget):
                     self._remote_drives[server_id] = {}
 
                 for disk in drives:
-                    self._remote_drives[server_id][disk.device_path] = disk
-                    d_item = QTreeWidgetItem(srv_item)
-                    self._update_disk_item(d_item, disk)
-                
+                    self._remote_drives[server_id][disk.uid] = disk
+                self._populate_disks(srv_item, drives, server_id)
+
                 srv_item.setExpanded(True)
                 break
 
@@ -204,14 +261,14 @@ class SidebarWidget(QWidget):
 
         item_type = data.get("type")
         if item_type == "disk":
-            dev_path = data.get("device_path")
-            is_remote = data.get("is_remote", False)
-            server_id = data.get("server_id")
-
-            if not is_remote and dev_path in self._local_drives:
-                self.disk_selected.emit(self._local_drives[dev_path])
-            elif is_remote and server_id in self._remote_drives and dev_path in self._remote_drives[server_id]:
-                self.disk_selected.emit(self._remote_drives[server_id][dev_path])
+            disk = self._disk_for(data.get("uid") or data.get("device_path"),
+                                  data.get("is_remote", False), data.get("server_id"))
+            if disk:
+                self.disk_selected.emit(disk)
+        elif item_type == "group_local":
+            self.host_selected.emit("")
+        elif item_type in ("server", "controller_group", "virtual_group"):
+            self.host_selected.emit(data.get("server_id") or "")
         elif item_type == "server_action":
             server_id = data.get("server_id")
             if server_id:
@@ -223,10 +280,10 @@ class SidebarWidget(QWidget):
             srv_name = srv.name if srv else "Remote Host"
             QMessageBox.warning(self, f"Connection Alert: {srv_name}", error_msg)
 
-    def _disk_for(self, dev_path: str, is_remote: bool, server_id: Optional[str]) -> Optional[DiskInfo]:
+    def _disk_for(self, uid: str, is_remote: bool, server_id: Optional[str]) -> Optional[DiskInfo]:
         if not is_remote:
-            return self._local_drives.get(dev_path)
-        return self._remote_drives.get(server_id, {}).get(dev_path)
+            return self._local_drives.get(uid)
+        return self._remote_drives.get(server_id, {}).get(uid)
 
     def _show_context_menu(self, pos):
         item = self.tree.itemAt(pos)
@@ -272,12 +329,14 @@ class SidebarWidget(QWidget):
             is_remote = data.get("is_remote", False)
             is_usb = data.get("is_usb", False)
 
-            disk = self._disk_for(dev_path, is_remote, data.get("server_id"))
-            act_scan = menu.addAction(scan_action_text(disk)) if disk else None
+            disk = self._disk_for(data.get("uid") or dev_path, is_remote, data.get("server_id"))
+            act_scan = menu.addAction(scan_action_text(disk)) if disk and not disk.is_virtual else None
             
             act_eject = None
             if not is_remote and is_usb:
                 act_eject = menu.addAction("⏏️ Safely Eject Drive")
+            if menu.isEmpty():
+                return
 
             action = menu.exec(self.tree.viewport().mapToGlobal(pos))
             if act_scan and action == act_scan:

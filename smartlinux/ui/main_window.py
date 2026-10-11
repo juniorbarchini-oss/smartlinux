@@ -1,11 +1,10 @@
 import os
 import subprocess
 import time
-import time
 from typing import List, Optional, Set, Dict, Tuple
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
-    QLabel, QPushButton, QMessageBox, QFileDialog, QStatusBar, QMenu
+    QLabel, QPushButton, QMessageBox, QFileDialog, QStatusBar, QMenu, QStackedWidget
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices
@@ -20,9 +19,12 @@ from ..core.exporter import ReportExporter
 from ..core.watcher import DeviceHotplugWatcher
 from ..core.history_manager import HistoryManager
 from ..core import usb_compat
+from ..core import raid
+from ..core import system_info
 
 from .sidebar import SidebarWidget
 from .detail_panel import DetailPanel
+from .server_panel import ServerPanel
 from .server_dialog import ServerDialog
 from .export_dialog import ExportDialog
 from .setup_dialog import SetupDependenciesDialog
@@ -84,6 +86,10 @@ class MainWindow(QMainWindow):
         self._all_known_disks: Dict[str, DiskInfo] = {}
         self._last_preflight_issue: str = ""
         self._compat_worker: Optional[CompatModeWorker] = None
+        # Host identity + storage controllers, per server id ("" = this computer). Read only
+        # when the user connects / refreshes a host (and when the local list loads), never on a timer.
+        self._system_info: Dict[str, system_info.SystemInfo] = {}
+        self._want_local_system_info = False
 
         # Hotplug auto-detection watcher
         self._hotplug_watcher: Optional[DeviceHotplugWatcher] = None
@@ -95,7 +101,7 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._check_smartctl_preflight()
         self._load_saved_servers()
-        self._discover_local_drives()
+        self._refresh_local_host()
         self._start_hotplug_watcher()
         QTimer.singleShot(1500, self._startup_update_check)
 
@@ -166,9 +172,12 @@ class MainWindow(QMainWindow):
         self.sidebar.server_add_requested.connect(self._on_add_server)
         self.sidebar.server_remove_requested.connect(self._on_remove_server)
         self.sidebar.server_refresh_requested.connect(self._on_refresh_server)
-        self.sidebar.local_refresh_requested.connect(self._discover_local_drives)
+        self.sidebar.local_refresh_requested.connect(self._refresh_local_host)
         self.sidebar.eject_requested.connect(self._eject_local_disk)
+        self.sidebar.host_selected.connect(self._on_host_selected)
         splitter.addWidget(self.sidebar)
+
+        self.detail_stack = QStackedWidget()
 
         self.detail_panel = DetailPanel()
         self.detail_panel.setObjectName("DetailContainer")
@@ -177,7 +186,13 @@ class MainWindow(QMainWindow):
         self.detail_panel.eject_requested.connect(self._eject_local_disk)
         self.detail_panel.self_test_requested.connect(self._run_self_test)
         self.detail_panel.compat_mode_requested.connect(self._on_compat_mode_requested)
-        splitter.addWidget(self.detail_panel)
+        self.detail_stack.addWidget(self.detail_panel)
+
+        self.server_panel = ServerPanel()
+        self.server_panel.setObjectName("DetailContainer")
+        self.server_panel.refresh_requested.connect(self._on_server_panel_refresh)
+        self.detail_stack.addWidget(self.server_panel)
+        splitter.addWidget(self.detail_stack)
 
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -334,25 +349,55 @@ class MainWindow(QMainWindow):
 
     # ---------------- FAST LOCAL DRIVES DISCOVERY (ON-DEMAND) ----------------
 
+    def _refresh_local_host(self):
+        """Startup and the Refresh button: list local drives AND read this computer's
+        identity / storage controllers. Hotplug events only re-list the drives."""
+        self._want_local_system_info = True
+        self._discover_local_drives()
+
     def _discover_local_drives(self):
+        """Lists local drives (never reads SMART)."""
+        with_system_info, self._want_local_system_info = self._want_local_system_info, False
         self.status_bar.showMessage("Detecting local storage devices...")
         self._start_worker(
-            LocalDiskDetector.discover_drives,
-            on_result=self._on_local_drives_discovered,
-            on_error=lambda err: self.status_bar.showMessage(f"Error enumerating local drives: {err}")
+            self._do_discover_local,
+            on_result=self._on_local_listed,
+            on_error=lambda err: self.status_bar.showMessage(f"Error enumerating local drives: {err}"),
+            with_system_info=with_system_info
         )
+
+    @staticmethod
+    def _do_discover_local(with_system_info: bool):
+        drives = LocalDiskDetector.discover_drives()
+        info = None
+        if with_system_info:
+            try:
+                info = system_info.collect_local()
+            except Exception as e:  # identity is a bonus: never blocks the drive list
+                print(f"Could not read local system information: {e}")
+        return drives, info
+
+    def _on_local_listed(self, result):
+        drives, info = result
+        if info is not None:
+            self._system_info[""] = info
+        system_info.assign_controllers(self._system_info.get(""), drives)
+        self._on_local_drives_discovered(drives)
+        if self.detail_stack.currentWidget() is self.server_panel and self.server_panel.server_id == "":
+            self._on_host_selected("")
 
     def _on_local_drives_discovered(self, drives: List[DiskInfo]):
         updated_drives = []
         for d in drives:
-            key = f"local_{d.device_path}"
+            key = d.host_key
             if key in self._all_known_disks:
                 self._merge_cached_reading(d, self._all_known_disks[key])
             self._all_known_disks[key] = d
             updated_drives.append(d)
 
         self.sidebar.set_local_disks(updated_drives)
-        self.status_bar.showMessage(f"{len(drives)} local drive(s) detected. Select a drive and click 'Scan Now'.")
+        self.status_bar.showMessage(
+            f"{len(drives)} local drive(s) detected{self._raid_summary(drives)}. Select a drive and click 'Scan Now'.")
         # Show the first drive if nothing is selected yet, but never read it: scans are manual.
         if updated_drives and not self.detail_panel.current_disk:
             self.detail_panel.display_disk(updated_drives[0])
@@ -396,6 +441,9 @@ class MainWindow(QMainWindow):
             self._ssh_clients[server_id].disconnect()
             del self._ssh_clients[server_id]
         self._all_known_disks = {k: v for k, v in self._all_known_disks.items() if v.server_id != server_id}
+        self._system_info.pop(server_id, None)
+        if self.server_panel.server_id == server_id:
+            self.detail_stack.setCurrentWidget(self.detail_panel)
         self.status_bar.showMessage("Server removed.")
 
     def _on_refresh_server(self, server_id: str):
@@ -406,7 +454,7 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Connecting to {srv.name} ({srv.host})...")
         self._start_worker(
             self._do_discover_remote_drives,
-            on_result=lambda res: self._on_remote_drives_discovered(server_id, res),
+            on_result=lambda res: self._on_remote_server_listed(server_id, res),
             on_error=lambda err: self._on_remote_server_error(server_id, err),
             srv=srv
         )
@@ -419,16 +467,58 @@ class MainWindow(QMainWindow):
             raise Exception(msg)
 
         drives = client.discover_remote_drives()
-        return drives
+        info = None
+        try:
+            info = client.collect_system_info()
+        except Exception as e:  # identity is a bonus: never blocks the drive list
+            print(f"Could not read system information of {srv.name}: {e}")
+        return drives, info
+
+    def _on_remote_server_listed(self, server_id: str, result):
+        drives, info = result
+        if info is not None:
+            self._system_info[server_id] = info
+        system_info.assign_controllers(self._system_info.get(server_id), drives)
+        self._on_remote_drives_discovered(server_id, drives)
+        if self.detail_stack.currentWidget() is self.server_panel and self.server_panel.server_id == server_id:
+            self._on_host_selected(server_id)
+
+    @staticmethod
+    def _raid_summary(drives: List[DiskInfo]) -> str:
+        physical = sum(1 for d in drives if raid.is_passthrough_type(d.smart_dev_type))
+        virtual = sum(1 for d in drives if d.is_virtual)
+        if not physical and not virtual:
+            return ""
+        return f" (RAID: {physical} physical, {virtual} virtual)"
 
     def _on_remote_drives_discovered(self, server_id: str, drives: List[DiskInfo]):
         for d in drives:
-            key = f"{server_id}_{d.device_path}"
+            key = f"{server_id}_{d.uid}"
             if key in self._all_known_disks:
                 self._merge_cached_reading(d, self._all_known_disks[key])
             self._all_known_disks[key] = d
         self.sidebar.set_server_drives(server_id, drives)
-        self.status_bar.showMessage(f"Server connected: {len(drives)} drive(s) listed.")
+        self.status_bar.showMessage(f"Server connected: {len(drives)} drive(s) listed{self._raid_summary(drives)}.")
+
+    # ---------------- SERVER PANEL (identity + storage controllers) ----------------
+
+    def _on_host_selected(self, server_id: str):
+        if server_id:
+            srv = next((s for s in self._active_servers if s.id == server_id), None)
+            if not srv:
+                return
+            name = f"🖥️  {srv.name} ({srv.host})"
+        else:
+            info = self._system_info.get("")
+            name = f"💻  This computer{f' ({info.hostname})' if info and info.hostname else ''}"
+        self.server_panel.display(server_id, name, self._system_info.get(server_id))
+        self.detail_stack.setCurrentWidget(self.server_panel)
+
+    def _on_server_panel_refresh(self, server_id: str):
+        if server_id:
+            self._on_refresh_server(server_id)
+        else:
+            self._refresh_local_host()
 
     def _on_remote_server_error(self, server_id: str, error_msg: str):
         self.sidebar.set_server_drives(server_id, [], error=error_msg)
@@ -482,15 +572,19 @@ class MainWindow(QMainWindow):
     # ---------------- ON-DEMAND SINGLE DISK SCAN ----------------
 
     def _on_disk_selected_in_sidebar(self, disk: DiskInfo):
-        key = f"{disk.server_id or 'local'}_{disk.device_path}"
-        current = self._all_known_disks.get(key, disk)
+        current = self._all_known_disks.get(disk.host_key, disk)
+        self.detail_stack.setCurrentWidget(self.detail_panel)
         self.detail_panel.display_disk(current)  # display only: the user starts scans
 
     def _on_sidebar_scan_requested(self, disk: DiskInfo):
-        key = f"{disk.server_id or 'local'}_{disk.device_path}"
-        self._scan_single_disk(self._all_known_disks.get(key, disk))
+        self._scan_single_disk(self._all_known_disks.get(disk.host_key, disk))
 
     def _scan_single_disk(self, disk: DiskInfo):
+        if disk.is_virtual:
+            # RAID volume: no SMART of its own, never sent to smartctl
+            self.status_bar.showMessage(
+                f"{disk.name} is a virtual drive (RAID volume): read the physical disks of its controller instead.")
+            return
         self.detail_panel.set_loading(True, f"Reading SMART telemetry for {disk.name}...")
         self.status_bar.showMessage(f"Scanning S.M.A.R.T. for {disk.device_path}...")
 
@@ -502,7 +596,10 @@ class MainWindow(QMainWindow):
         )
 
     def _do_read_single_disk(self, disk: DiskInfo) -> DiskInfo:
+        passthrough = raid.is_passthrough_type(disk.smart_dev_type)
         if not disk.is_remote:
+            if passthrough:
+                return LocalDiskDetector.read_drive_smart(disk.device_path, dev_type=disk.smart_dev_type)
             local = LocalDiskDetector.read_drive_smart(disk.device_path)
             try:
                 local.uas_candidate = usb_compat.detect_uas_smart_block(local)
@@ -523,11 +620,21 @@ class MainWindow(QMainWindow):
                     raise Exception(msg)
                 self._ssh_clients[server_id] = client
 
+            if passthrough:
+                return client.read_remote_drive_smart(disk.device_path, dev_type=disk.smart_dev_type)
             return client.read_remote_drive_smart(disk.device_path)
 
     def _on_single_disk_scanned(self, updated_disk: DiskInfo):
         updated_disk.last_scanned = time.time()
-        key = f"{updated_disk.server_id or 'local'}_{updated_disk.device_path}"
+        key = updated_disk.host_key
+        listed = self._all_known_disks.get(key)
+        if listed is not None:
+            # where the disk sits (controller group, slot) comes from discovery, not from smartctl
+            updated_disk.controller = updated_disk.controller or listed.controller
+            if updated_disk.slot is None:
+                updated_disk.slot = listed.slot
+            if listed.uid != listed.device_path:
+                updated_disk.name = listed.name
         self._all_known_disks[key] = updated_disk
         HistoryManager.append_snapshot(updated_disk)
 
@@ -550,7 +657,12 @@ class MainWindow(QMainWindow):
         )
 
     def _do_run_self_test(self, disk: DiskInfo, test_type: str) -> Tuple[bool, str]:
+        if disk.is_virtual:
+            return False, "Virtual drives (RAID volumes) have no self-test: run it on the physical disks."
+        dev_type = disk.smart_dev_type if raid.is_passthrough_type(disk.smart_dev_type) else None
         if not disk.is_remote:
+            if dev_type:
+                return LocalDiskDetector.run_self_test(disk.device_path, test_type, dev_type=dev_type)
             return LocalDiskDetector.run_self_test(disk.device_path, test_type)
 
         server_id = disk.server_id
@@ -566,6 +678,8 @@ class MainWindow(QMainWindow):
                 raise Exception(msg)
             self._ssh_clients[server_id] = client
 
+        if dev_type:
+            return client.run_self_test(disk.device_path, test_type, dev_type=dev_type)
         return client.run_self_test(disk.device_path, test_type)
 
     def _on_self_test_result(self, disk: DiskInfo, test_type: str, result):

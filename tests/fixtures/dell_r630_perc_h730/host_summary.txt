@@ -1,0 +1,15 @@
+CPU(s):                                  40
+Vendor ID:                               GenuineIntel
+Model name:                              Intel(R) Xeon(R) CPU E5-2660 v3 @ 2.60GHz
+Thread(s) per core:                      2
+Core(s) per socket:                      10
+Socket(s):                               2
+CPU(s) scaling MHz:                      81%
+CPU max MHz:                             3300.0000
+CPU min MHz:                             1200.0000
+               total        used        free      shared  buff/cache   available
+Mem:     540925992960 111184490496 422655610880    53530624 10281353216 429741502464
+PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
+7.0.14-20-pve
+pve-manager/9.2.21/4f6e0ac86f9e8c7f (running kernel: 7.0.14-20-pve)
+up 1 week, 3 days, 2 hours, 20 minutes

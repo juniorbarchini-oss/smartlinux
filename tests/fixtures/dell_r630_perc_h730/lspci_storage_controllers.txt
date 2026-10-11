@@ -1,0 +1,30 @@
+Slot:	00:11.4
+Class:	SATA controller [0106]
+Vendor:	Intel Corporation [8086]
+Device:	C610/X99 series chipset sSATA Controller [AHCI mode] [8d62]
+SVendor:	Dell [1028]
+SDevice:	Device [0601]
+Rev:	05
+ProgIf:	01
+NUMANode:	0
+IOMMUGroup:	17
+Slot:	00:1f.2
+Class:	SATA controller [0106]
+Vendor:	Intel Corporation [8086]
+Device:	C610/X99 series chipset 6-Port SATA Controller [AHCI mode] [8d02]
+SVendor:	Dell [1028]
+SDevice:	Device [0601]
+Rev:	05
+ProgIf:	01
+NUMANode:	0
+IOMMUGroup:	24
+Slot:	02:00.0
+Class:	RAID bus controller [0104]
+Vendor:	Broadcom / LSI [1000]
+Device:	MegaRAID SAS-3 3108 [Invader] [005d]
+SVendor:	Dell [1028]
+SDevice:	PERC H730 Mini [1f49]
+Rev:	02
+ProgIf:	00
+NUMANode:	0
+IOMMUGroup:	26

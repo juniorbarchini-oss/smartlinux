@@ -139,7 +139,7 @@ def scanned_r630():
 def test_sentence_lists_only_the_exceptions():
     physical, virtual = scanned_r630()
     assert ctl.status_sentence(physical, virtual, read_fixture_controller()) == \
-        "2 disks have reallocated sectors; 3 volumes have no redundancy."
+        "2 disks have reallocated sectors."
     report = read_fixture_controller(synthetic_vd_state("Dgrd"))                # SYNTHETIC
     assert "1 volume has lost redundancy" in ctl.status_sentence(physical, virtual, report)
 
@@ -234,7 +234,7 @@ def test_after_a_scan_overview_maintenance_and_trends(env, history_file):
     win = env.mw.MainWindow()
     view = open_controller(win)
     view.scan_btn.click()
-    assert view.summary_lbl.text() == "2 disks have reallocated sectors; 3 volumes have no redundancy."
+    assert view.summary_lbl.text() == "2 disks have reallocated sectors."
     assert list(view.cards) == ["schedule", "battery", "controller", "operations"]
     battery = view.cards["battery"]
     assert battery.line_lbl.text() == "Optimal · 98 % · protects the cache for ~32 min"
@@ -269,3 +269,24 @@ def test_maintenance_without_vendor_tool(env, history_file):
     assert view.cards == {}
     assert "vendor tool" in view.maint_empty_lbl.text() and not view.maint_empty_lbl.isHidden()
     assert view.summary_lbl.text() == "2 disks have reallocated sectors."
+
+
+# ---- polish: single-drive volumes are information, not a problem --------------------------
+
+def test_single_drive_volumes_are_a_neutral_note_not_part_of_the_problem_sentence():
+    report = read_fixture_controller()
+    assert "redundancy" not in ctl.status_sentence([], [], report)
+    assert ctl.redundancy_note(report) == "3 volumes are single drives (RAID0, no controller redundancy)."
+    assert ctl.redundancy_note(None) == ""
+
+
+def test_lost_redundancy_is_still_a_problem():
+    physical, virtual = scanned_r630()
+    report = read_fixture_controller(synthetic_vd_state("Dgrd"))                # SYNTHETIC
+    assert "lost redundancy" in ctl.status_sentence(physical, virtual, report)
+
+
+def test_operations_card_reads_no_operation_instead_of_none():
+    report = read_fixture_controller()
+    card = mt.operations_card(report.volumes)
+    assert all(value == "No operation" for _label, value, _tip in card.details)

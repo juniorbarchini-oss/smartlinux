@@ -192,7 +192,7 @@ def operations_card(volumes) -> Card:
     running = [(v, parse_operation(v.active_operations)) for v in volumes if v.active_operations]
     if not running:
         return Card("operations", "Operations", HealthStatus.HEALTHY, "No operation in progress",
-                    [(v.name or v.dg_vd, "None", "Active Operations") for v in volumes])
+                    [(v.name or v.dg_vd, "No operation", "Active Operations") for v in volumes])
     status = HealthStatus.HEALTHY
     parts, details = [], []
     for v, op in running:

@@ -157,6 +157,11 @@ class ControllerView(QWidget):
         self.summary_lbl.setWordWrap(True)
         self.summary_lbl.setStyleSheet("font-size: 15px; font-weight: 600; color: #c9d1d9;")
         layout.addWidget(self.summary_lbl)
+        self.note_lbl = QLabel("")
+        self.note_lbl.setWordWrap(True)
+        self.note_lbl.setStyleSheet("font-size: 13px; color: #8b949e;")
+        self.note_lbl.setVisible(False)
+        layout.addWidget(self.note_lbl)
 
         # a) header
         card = QFrame()
@@ -312,6 +317,9 @@ class ControllerView(QWidget):
                     HealthStatus.FAILED: "Failure: see the tables below",
                     HealthStatus.UNKNOWN: "Some disks are not scanned yet or could not be read"}[status]
         self.summary_lbl.setText(ctl.status_sentence(physical, virtual, report))
+        note = ctl.redundancy_note(report)
+        self.note_lbl.setText(note)
+        self.note_lbl.setVisible(bool(note))
         self.status_lbl.setText(f"{status.icon}  {text}")
         self.status_lbl.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {HEALTH_COLORS[status]};")
         self.tool_lbl.setText(tool_text(state, local=not server_id))

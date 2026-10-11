@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from ..core.models import DiskInfo, HealthStatus
 from .history_tab import HistoryTab
+from .scan_state import SCAN_NOW_TEXT, scan_action_text, format_last_scanned
 
 
 class MetricCard(QFrame):
@@ -98,6 +99,10 @@ class DetailPanel(QWidget):
         self.model_lbl.setStyleSheet("font-size: 21px; font-weight: bold; color: #ffffff;")
         top_row.addWidget(self.model_lbl)
         top_row.addStretch()
+
+        self.last_scanned_lbl = QLabel("")
+        self.last_scanned_lbl.setStyleSheet("font-size: 13px; color: #8b949e; background: transparent;")
+        top_row.addWidget(self.last_scanned_lbl)
 
         self.health_badge = QLabel("NO SELECTION")
         self.health_badge.setStyleSheet(
@@ -246,7 +251,7 @@ class DetailPanel(QWidget):
         self.self_test_btn.setMenu(self._self_test_menu)
         action_layout.addWidget(self.self_test_btn)
 
-        self.scan_btn = QPushButton("🔍 Scan Now")
+        self.scan_btn = QPushButton(SCAN_NOW_TEXT)
         self.scan_btn.setObjectName("PrimaryButton")
         self.scan_btn.setEnabled(False)
         self.scan_btn.clicked.connect(self._on_scan_clicked)
@@ -259,6 +264,8 @@ class DetailPanel(QWidget):
         self.scan_btn.setEnabled(not self._compat_busy)
         self.export_btn.setEnabled(True)
         self.self_test_btn.setEnabled(not self._compat_busy)
+        self.scan_btn.setText(scan_action_text(disk))
+        self.last_scanned_lbl.setText(format_last_scanned(disk.last_scanned))
 
         # Eject button visibility
         if disk.is_usb and not disk.is_remote:
@@ -278,7 +285,7 @@ class DetailPanel(QWidget):
         )
         self.info_lbl.setText(info_text)
 
-        # Last Self-Test result (set by 'Self-Test' button + a later 'Scan Now')
+        # Last Self-Test result (set by 'Self-Test' button + a later 'Refresh')
         if disk.self_test_status:
             status_lower = disk.self_test_status.lower()
             if "progress" in status_lower or "remaining" in status_lower:
@@ -292,7 +299,7 @@ class DetailPanel(QWidget):
             self.self_test_status_lbl.setText(f"Last Self-Test: {disk.self_test_status}")
             self.self_test_status_lbl.setStyleSheet(f"font-size: 13px; color: {color}; font-weight: 600;")
         else:
-            self.self_test_status_lbl.setText("Last Self-Test: — (use the 'Self-Test' button below, then 'Scan Now')")
+            self.self_test_status_lbl.setText("Last Self-Test: — (use the 'Self-Test' button below, then 'Refresh')")
             self.self_test_status_lbl.setStyleSheet("font-size: 13px; color: #8b949e; font-weight: 600;")
 
         # USB compatibility mode: note on a Bulk-Only reading / notice when SMART is hidden
@@ -475,7 +482,7 @@ class DetailPanel(QWidget):
             self.scan_btn.setText("⏳ Scanning...")
             self.status_msg_lbl.setText(f"⏳ {message}")
         else:
-            self.scan_btn.setText("🔍 Scan Now")
+            self.scan_btn.setText(scan_action_text(self.current_disk))
             self.status_msg_lbl.setText(message)
 
     def _on_scan_clicked(self):

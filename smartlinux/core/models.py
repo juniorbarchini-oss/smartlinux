@@ -81,6 +81,8 @@ class DiskInfo:
     uas_candidate: Optional[Any] = None
     # "Read in compatibility mode on ..." when this reading came from Bulk-Only mode
     compat_read_note: Optional[str] = None
+    # Epoch time of the last manual SMART read in this session (None = not scanned yet)
+    last_scanned: Optional[float] = None
 
     @property
     def display_title(self) -> str:

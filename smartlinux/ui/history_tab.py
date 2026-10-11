@@ -45,7 +45,7 @@ class HistoryTab(QWidget):
         layout.addLayout(hdr)
 
         self.info_lbl = QLabel(
-            "A new entry is saved every time you run 'Scan Now' on this drive. "
+            "A new entry is saved every time you scan or refresh this drive. "
             "File: ~/.local/share/smartlinux/history.jsonl"
         )
         self.info_lbl.setWordWrap(True)

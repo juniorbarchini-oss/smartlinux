@@ -71,10 +71,10 @@ class ExportDialog(QDialog):
             item = QListWidgetItem()
             host_tag = f"[{disk.server_name}] " if disk.is_remote and disk.server_name else "[Local] "
             status_tag = f"{disk.health_status.icon} {disk.health_status.label}" if disk.attributes else "⚪ (Unscanned)"
-            item.setText(f"{host_tag}{disk.device_path} • {disk.model} ({disk.size_human}) — {status_tag}")
+            item.setText(f"{host_tag}{disk.display_path} • {disk.model} ({disk.size_human}) — {status_tag}")
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             
-            if self.selected_disk and disk.device_path == self.selected_disk.device_path and disk.server_id == self.selected_disk.server_id:
+            if self.selected_disk and disk.uid == self.selected_disk.uid and disk.server_id == self.selected_disk.server_id:
                 item.setCheckState(Qt.Checked)
             elif len(self.available_disks) == 1 or len(disk.attributes) > 0:
                 item.setCheckState(Qt.Checked)

@@ -27,7 +27,7 @@ class ReportExporter:
         md.append("")
         md.append(f"> **Date & Time:** `{now_str}`  ")
         md.append(f"> **Host Location:** `{host_info}`  ")
-        md.append(f"> **Device Path:** `{disk.device_path}`  ")
+        md.append(f"> **Device Path:** `{disk.display_path}`  ")
         md.append("")
         md.append("---")
         md.append("")
@@ -109,7 +109,7 @@ class ReportExporter:
             status_cls = "badge-ok" if disk.health_status == HealthStatus.HEALTHY else ("badge-warn" if disk.health_status == HealthStatus.WARNING else "badge-fail")
 
             html_parts.append(f"<h2>Drive #{idx+1}: {html.escape(disk.model)} ({disk.size_human})</h2>")
-            html_parts.append(f"<p style='font-size: 10pt; margin: 4pt 0 8pt 0;'><b>Location:</b> {host_info} &nbsp;|&nbsp; <b>Path:</b> <code>{html.escape(disk.device_path)}</code> &nbsp;|&nbsp; <b>S/N:</b> {html.escape(disk.serial)} &nbsp;|&nbsp; <b>Firmware:</b> {html.escape(disk.firmware)} &nbsp;|&nbsp; <b>Health:</b> <span class='{status_cls}'>{disk.health_status.label}</span> ({html.escape(disk.health_summary)})</p>")
+            html_parts.append(f"<p style='font-size: 10pt; margin: 4pt 0 8pt 0;'><b>Location:</b> {host_info} &nbsp;|&nbsp; <b>Path:</b> <code>{html.escape(disk.display_path)}</code> &nbsp;|&nbsp; <b>S/N:</b> {html.escape(disk.serial)} &nbsp;|&nbsp; <b>Firmware:</b> {html.escape(disk.firmware)} &nbsp;|&nbsp; <b>Health:</b> <span class='{status_cls}'>{disk.health_status.label}</span> ({html.escape(disk.health_summary)})</p>")
 
             temp_val = disk.formatted_temperature
             hours_val = disk.formatted_power_on
@@ -183,7 +183,7 @@ class ReportExporter:
             xml.append('   <Row/>')
 
             host_info = f"Remote ({disk.server_name})" if disk.is_remote else "Local Machine"
-            xml.append(f'   <Row><Cell ss:StyleID="Bold"><Data ss:Type="String">Device Path:</Data></Cell><Cell><Data ss:Type="String">{disk.device_path}</Data></Cell><Cell ss:StyleID="Bold"><Data ss:Type="String">Location:</Data></Cell><Cell><Data ss:Type="String">{host_info}</Data></Cell></Row>')
+            xml.append(f'   <Row><Cell ss:StyleID="Bold"><Data ss:Type="String">Device Path:</Data></Cell><Cell><Data ss:Type="String">{html.escape(disk.display_path)}</Data></Cell><Cell ss:StyleID="Bold"><Data ss:Type="String">Location:</Data></Cell><Cell><Data ss:Type="String">{host_info}</Data></Cell></Row>')
             xml.append(f'   <Row><Cell ss:StyleID="Bold"><Data ss:Type="String">Serial Number:</Data></Cell><Cell><Data ss:Type="String">{disk.serial}</Data></Cell><Cell ss:StyleID="Bold"><Data ss:Type="String">Firmware:</Data></Cell><Cell><Data ss:Type="String">{disk.firmware}</Data></Cell></Row>')
             xml.append(f'   <Row><Cell ss:StyleID="Bold"><Data ss:Type="String">Health Status:</Data></Cell><Cell><Data ss:Type="String">{disk.health_status.label} ({disk.health_summary})</Data></Cell><Cell ss:StyleID="Bold"><Data ss:Type="String">Temperature:</Data></Cell><Cell><Data ss:Type="String">{disk.formatted_temperature}</Data></Cell></Row>')
             xml.append(f'   <Row><Cell ss:StyleID="Bold"><Data ss:Type="String">Power-On Hours:</Data></Cell><Cell><Data ss:Type="String">{disk.formatted_power_on}</Data></Cell><Cell ss:StyleID="Bold"><Data ss:Type="String">Power Cycles:</Data></Cell><Cell><Data ss:Type="String">{disk.power_cycles or "N/A"}</Data></Cell></Row>')

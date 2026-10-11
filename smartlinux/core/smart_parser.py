@@ -50,6 +50,17 @@ def reading_quality(data: Dict[str, Any]) -> int:
     return 0
 
 
+def reading_rank(quality: int, size_bytes: int) -> tuple:
+    """Orders candidate readings of one drive: a reading that identifies the drive
+    (it reports a capacity) always beats one that does not, then richer telemetry wins.
+
+    Some USB bridges answer probes meant for other bridge families with an empty
+    but well-formed reply (e.g. an all-zero NVMe log scoring quality 2, size 0). Ranking
+    by quality first let that empty reply outrank a real SCSI/SAT reading.
+    """
+    return (size_bytes > 0, quality)
+
+
 class SmartParser:
     """Parses JSON output from smartctl (-j -a)."""
 

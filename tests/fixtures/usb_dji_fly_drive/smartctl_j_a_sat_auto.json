@@ -1,0 +1,70 @@
+{
+  "json_format_version": [
+    1,
+    0
+  ],
+  "smartctl": {
+    "version": [
+      7,
+      5
+    ],
+    "pre_release": false,
+    "svn_revision": "5714",
+    "platform_info": "x86_64-linux-7.2.5-3-omarchy",
+    "build_info": "(local build)",
+    "argv": [
+      "smartctl",
+      "-j",
+      "-d",
+      "sat,auto",
+      "-a",
+      "/dev/sda"
+    ],
+    "exit_status": 4
+  },
+  "local_time": {
+    "time_t": 1791734246,
+    "asctime": "Sun Oct 11 12:57:26 2026 -03"
+  },
+  "device": {
+    "name": "/dev/sda",
+    "info_name": "/dev/sda [SCSI]",
+    "type": "scsi",
+    "protocol": "SCSI"
+  },
+  "scsi_vendor": "Seagate",
+  "scsi_product": "DJI Fly Drive",
+  "model_name": "Seagate DJI Fly Drive",
+  "scsi_model_name": "Seagate DJI Fly Drive",
+  "scsi_revision": "0001",
+  "scsi_version": "SPC-4",
+  "user_capacity": {
+    "blocks": 2000409263,
+    "bytes": 1024209542656
+  },
+  "logical_block_size": 512,
+  "logical_unit_id": "0x5000000000000001",
+  "serial_number": "0000000000000000",
+  "device_type": {
+    "scsi_terminology": "Peripheral Device Type [PDT]",
+    "scsi_value": 0,
+    "name": "disk"
+  },
+  "smart_support": {
+    "available": true,
+    "enabled": false
+  },
+  "temperature_warning": {
+    "enabled": false
+  },
+  "smart_status": {
+    "passed": true
+  },
+  "temperature": {
+    "current": 0,
+    "drive_trip": 0
+  },
+  "seagate_farm_log": {
+    "supported": false
+  }
+}

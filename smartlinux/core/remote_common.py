@@ -13,7 +13,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from .models import DiskInfo, HealthStatus
-from .smart_parser import SmartParser, SMART_DEVICE_TYPES, reading_quality, format_bytes_commercial
+from .smart_parser import SmartParser, SMART_DEVICE_TYPES, reading_quality, reading_rank, format_bytes_commercial
 from .smart_text_parser import (
     is_unrecognized_option, looks_like_smartctl_text, parse_proc_partitions,
     parse_smart_text, sanitize_sys_value, text_reading_quality,
@@ -302,7 +302,7 @@ class BaseRemoteClient:
 
     def read_remote_drive_smart(self, device_path: str) -> DiskInfo:
         best_disk = None
-        best_quality = (0, False)
+        best_quality = (False, 0)
         best_type: Optional[str] = None
         last_error = ""
         last_json = None
@@ -326,8 +326,8 @@ class BaseRemoteClient:
                                 if quality == 2 and disk.health_status != HealthStatus.UNKNOWN and disk.size_bytes > 0:
                                     self._device_types[device_path] = dev_type
                                     return disk
-                                if best_disk is None or (quality, disk.size_bytes > 0) > best_quality:
-                                    best_disk, best_quality, best_type = disk, (quality, disk.size_bytes > 0), dev_type
+                                if best_disk is None or reading_rank(quality, disk.size_bytes) > best_quality:
+                                    best_disk, best_quality, best_type = disk, reading_rank(quality, disk.size_bytes), dev_type
                             except Exception as e:
                                 print(f"Error parsing SMART JSON: {e}")
                 elif is_unrecognized_option(out):
@@ -347,8 +347,8 @@ class BaseRemoteClient:
                         if quality == 2 and disk.health_status != HealthStatus.UNKNOWN and disk.size_bytes > 0:
                             self._device_types[device_path] = dev_type
                             return disk
-                        if best_disk is None or (quality, disk.size_bytes > 0) > best_quality:
-                            best_disk, best_quality, best_type = disk, (quality, disk.size_bytes > 0), dev_type
+                        if best_disk is None or reading_rank(quality, disk.size_bytes) > best_quality:
+                            best_disk, best_quality, best_type = disk, reading_rank(quality, disk.size_bytes), dev_type
                     except Exception as e:
                         print(f"Error parsing SMART text: {e}")
                 if err:

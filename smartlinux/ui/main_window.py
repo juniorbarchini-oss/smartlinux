@@ -1,16 +1,20 @@
 import os
 import subprocess
+import time
 from typing import List, Optional, Set, Dict, Tuple
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
-    QLabel, QPushButton, QMessageBox, QFileDialog, QStatusBar
+    QLabel, QPushButton, QMessageBox, QFileDialog, QStatusBar, QMenu
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl
+from PySide6.QtGui import QAction, QDesktopServices
 
 from ..core.models import DiskInfo, ServerConfig, HealthStatus
 from ..core.detector import LocalDiskDetector
 from ..core.ssh_client import create_ssh_client, AutoSSHClient, host_key_fingerprint, trust_host_key, known_hosts_label
-from ..core.config_manager import ConfigManager
+from ..core.config_manager import ConfigManager, AppSettings
+from ..core import update_checker
+from .. import __version__
 from ..core.exporter import ReportExporter
 from ..core.watcher import DeviceHotplugWatcher
 from ..core.history_manager import HistoryManager
@@ -92,6 +96,7 @@ class MainWindow(QMainWindow):
         self._load_saved_servers()
         self._discover_local_drives()
         self._start_hotplug_watcher()
+        QTimer.singleShot(1500, self._startup_update_check)
 
     def _setup_ui(self):
         central = QWidget()
@@ -129,6 +134,27 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(self.banner_widget)
 
+        # 1b. Update notice (only ever shown after an opt-in or manual check)
+        self.update_banner = QWidget()
+        self.update_banner.setObjectName("SuccessBanner")
+        self.update_banner.setVisible(False)
+        update_layout = QHBoxLayout(self.update_banner)
+        update_layout.setContentsMargins(14, 10, 14, 10)
+        self.update_text = QLabel("")
+        self.update_text.setStyleSheet("font-size: 13px; color: #56d364; font-weight: 500;")
+        update_layout.addWidget(self.update_text, 1)
+        self.update_view_btn = QPushButton("View release")
+        self.update_view_btn.setStyleSheet("background-color: #238636; color: white; font-weight: bold; padding: 4px 10px; font-size: 12px;")
+        self.update_view_btn.clicked.connect(self._open_release_page)
+        update_layout.addWidget(self.update_view_btn)
+        self.update_dismiss_btn = QPushButton("✕")
+        self.update_dismiss_btn.setFixedSize(26, 26)
+        self.update_dismiss_btn.setStyleSheet("background: transparent; border: none; font-weight: bold; color: #56d364; font-size: 14px;")
+        self.update_dismiss_btn.clicked.connect(self._dismiss_update_notice)
+        update_layout.addWidget(self.update_dismiss_btn)
+        main_layout.addWidget(self.update_banner)
+        self._latest_release: Optional[update_checker.ReleaseInfo] = None
+
         # 2. Main Splitter (Sidebar + Detail Panel)
         splitter = QSplitter(Qt.Horizontal)
         splitter.setHandleWidth(3)
@@ -162,6 +188,21 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready. On-demand mode active (drives are not scanned until requested).")
 
+        self.updates_btn = QPushButton(f"v{__version__}  ·  Updates ▾")
+        self.updates_btn.setFlat(True)
+        self.updates_btn.setCursor(Qt.PointingHandCursor)
+        updates_menu = QMenu(self.updates_btn)
+        check_now = QAction("Check for updates now", updates_menu)
+        check_now.triggered.connect(lambda: self._check_for_updates(manual=True))
+        updates_menu.addAction(check_now)
+        self.auto_update_action = QAction("Check automatically once a day", updates_menu)
+        self.auto_update_action.setCheckable(True)
+        self.auto_update_action.setChecked(AppSettings.get("update_check", "unset") == "on")
+        self.auto_update_action.toggled.connect(self._on_auto_update_toggled)
+        updates_menu.addAction(self.auto_update_action)
+        self.updates_btn.setMenu(updates_menu)
+        self.status_bar.addPermanentWidget(self.updates_btn)
+
     def _start_hotplug_watcher(self):
         try:
             self._hotplug_watcher = DeviceHotplugWatcher()
@@ -189,6 +230,75 @@ class MainWindow(QMainWindow):
         worker.finished.connect(_cleanup)
         worker.start()
         return worker
+
+    # ---------------- UPDATE NOTICE (OPT-IN) ----------------
+
+    def _startup_update_check(self):
+        setting = AppSettings.get("update_check", "unset")
+        if setting == "unset":
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Question)
+            box.setWindowTitle("Check for updates?")
+            box.setText("Let SmartLinux check for new versions?")
+            box.setInformativeText(
+                "Once a day it would make one anonymous request to the public GitHub API to see "
+                "whether a newer release exists. No disk, server or personal data is sent, and "
+                "nothing is downloaded or installed.\n\n"
+                "You can change this any time from the Updates menu in the status bar."
+            )
+            yes = box.addButton("Yes, check daily", QMessageBox.AcceptRole)
+            box.addButton("No thanks", QMessageBox.RejectRole)
+            box.exec()
+            enabled = box.clickedButton() is yes
+            AppSettings.set(update_check="on" if enabled else "off")
+            self.auto_update_action.blockSignals(True)
+            self.auto_update_action.setChecked(enabled)
+            self.auto_update_action.blockSignals(False)
+            setting = "on" if enabled else "off"
+
+        if update_checker.should_auto_check(setting, AppSettings.get("update_last_check", 0), time.time()):
+            self._check_for_updates(manual=False)
+
+    def _on_auto_update_toggled(self, enabled: bool):
+        AppSettings.set(update_check="on" if enabled else "off")
+        if enabled:
+            self._check_for_updates(manual=False, force=True)
+
+    def _check_for_updates(self, manual: bool, force: bool = False):
+        AppSettings.set(update_last_check=time.time())
+        if manual:
+            self.status_bar.showMessage("Checking for updates...")
+        self._start_worker(
+            update_checker.fetch_latest_release,
+            on_result=lambda release: self._on_update_result(release, manual),
+            on_error=lambda err: self._on_update_error(err, manual),
+        )
+
+    def _on_update_result(self, release, manual: bool):
+        if update_checker.is_newer(release.version, __version__):
+            if manual or AppSettings.get("update_dismissed", "") != release.version:
+                self._latest_release = release
+                self.update_text.setText(
+                    f"🔔 SmartLinux {release.version} is available (you have {__version__})."
+                )
+                self.update_banner.setVisible(True)
+            if manual:
+                self.status_bar.showMessage(f"SmartLinux {release.version} is available.")
+        elif manual:
+            self.status_bar.showMessage(f"You're up to date (v{__version__}).")
+
+    def _on_update_error(self, error: str, manual: bool):
+        if manual:
+            self.status_bar.showMessage(f"Could not check for updates: {error}")
+
+    def _open_release_page(self):
+        url = self._latest_release.url if self._latest_release else update_checker.RELEASES_PAGE
+        QDesktopServices.openUrl(QUrl(url))
+
+    def _dismiss_update_notice(self):
+        if self._latest_release:
+            AppSettings.set(update_dismissed=self._latest_release.version)
+        self.update_banner.setVisible(False)
 
     def _show_banner(self, message: str, is_error: bool = False):
         self.banner_text.setText(message)

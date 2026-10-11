@@ -246,3 +246,44 @@ class ConfigManager:
         KeyringHelper.delete_password(server_id)
         cls.save_servers(servers)
         return servers
+
+
+class AppSettings:
+    """Small per-user preferences file (~/.config/smartlinux/settings.json, 0600)."""
+
+    @classmethod
+    def _path(cls) -> str:
+        return os.path.join(ConfigManager.CONFIG_DIR, "settings.json")
+
+    @classmethod
+    def load(cls) -> dict:
+        try:
+            with open(cls._path(), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    @classmethod
+    def get(cls, key: str, default=None):
+        return cls.load().get(key, default)
+
+    @classmethod
+    def set(cls, **values) -> bool:
+        ConfigManager._ensure_dir()
+        data = cls.load()
+        data.update(values)
+        tmp = f"{cls._path()}.tmp.{uuid.uuid4().hex[:8]}"
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, cls._path())
+            os.chmod(cls._path(), 0o600)
+            return True
+        except Exception:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            return False

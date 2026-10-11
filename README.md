@@ -40,6 +40,8 @@ Designed with an **on-demand philosophy**, SmartLinux avoids unnecessary drive s
   Replaces permissive auto-add policies with strict `known_hosts` cryptographic verification, protecting Homelab hosts from Man-in-the-Middle (MITM) attacks with interactive fingerprint approval modals. SSH passwords are saved securely in the system keyring (`gnome-keyring` / SecretService) with defensive `0600` / `0700` file permissions.
 * **🤖 Standalone Ansible & ntfy Monitor:**  
   Includes `scripts/ansible_smart_check.py`, a standalone zero-dependency Python script designed for headless automation (e.g. Ansible / Semaphore). Evaluates exact ATA/NVMe thresholds and fires immediate push alerts to a self-hosted **ntfy** instance (`NTFY_URL`) on WARNING or FAILED status.
+* **🔔 Opt-In Update Notice:**  
+  Optionally tells you when a newer release is available. Off until you enable it; it only shows a version number and a link, and never downloads or installs anything. See [Update notifications & privacy](#-update-notifications--privacy).
 * **🎨 Modern High-Contrast Dark UI:**  
   Crisp typography (+15px readable scale), responsive telemetry cards (Temperature, Power-On Hours, Power Cycles), and full ATA / NVMe SMART attribute tables.
 * **🪄 1-Click Dependency Auto-Configuration:**  
@@ -94,6 +96,19 @@ sudo chmod u+s /usr/bin/smartctl
 
 ---
 
+## 🔔 Update notifications & privacy
+
+SmartLinux can tell you when a newer release exists. This is **off until you opt in**:
+
+* **Opt-in:** you are asked once at first launch. You can change it at any time from the **Updates** button in the status bar. **Check for updates now** always works on click, even with automatic checks off.
+* **What is sent:** one anonymous HTTPS `GET` to `https://api.github.com/repos/juniorbarchini-oss/smartlinux/releases/latest` with the header `User-Agent: SmartLinux/<version>`. Like any web request, GitHub sees your IP address. No identifiers, no disk or server data.
+* **How often:** at most once every 24 hours.
+* **What happens with the answer:** nothing is downloaded or installed; SmartLinux only shows a version number and a link to the release.
+* **Where the setting lives:** `~/.config/smartlinux/settings.json`.
+* **No other telemetry.**
+
+---
+
 ## 🪟 Tiling Window Managers (Hyprland / Omarchy / Sway)
 
 SmartLinux features a high-density diagnostic dashboard layout designed for a native window size of `1180x750`. To prevent tiling window managers from auto-tiling or stretching the dashboard across ultra-wide monitors, add a floating rule:
@@ -113,6 +128,23 @@ windowrulev2 = center, class:^(smartlinux)$
 ---
 
 ## 🚀 Installation & Quick Start
+
+### Option 0: Distribution Packages
+
+#### Ubuntu / Debian / Linux Mint / Pop!_OS:
+Download `smartlinux_<version>_all.deb` from the [GitHub release](https://github.com/juniorbarchini-oss/smartlinux/releases) and install it:
+```bash
+sudo apt install ./smartlinux_<version>_all.deb
+```
+
+#### Arch Linux / Manjaro:
+```bash
+git clone https://github.com/juniorbarchini-oss/smartlinux.git
+cd smartlinux/packaging/arch && makepkg -si
+```
+*(AUR publishing is pending: AUR account registration is currently closed upstream.)*
+
+`putty` / `putty-tools` is optional and only needed for legacy SSH devices; see [Legacy devices](#-legacy-devices).
 
 ### Option 1: Desktop Integration (1-Click Installer)
 To install SmartLinux into your system's Application Menu with its official commercial icon:
@@ -138,6 +170,11 @@ chmod +x build_portable.sh
 ./build_portable.sh
 ```
 The compiled standalone binary will be generated in `dist/SmartLinux/`.
+
+### Releasing (maintainers)
+1. Bump `__version__` in `smartlinux/__init__.py` and `pkgver` in `packaging/arch/PKGBUILD` together (a test enforces that they match).
+2. Tag `vX.Y.Z` and create the GitHub release.
+3. Build the `.deb` with `packaging/debian/build-deb.sh` and attach it to the release.
 
 ---
 

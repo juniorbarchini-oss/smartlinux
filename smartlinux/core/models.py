@@ -103,6 +103,7 @@ class DiskInfo:
     raid_volume: Optional[str] = None
     raid_detail: Optional[str] = None
     raid_health: Optional[HealthStatus] = None
+    vendor_media_errors: Optional[int] = None   # "Media Error Count" from the vendor tool
     # SAS/SCSI identity details (filled from smartctl when available)
     vendor: Optional[str] = None
     form_factor: Optional[str] = None

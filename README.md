@@ -283,6 +283,29 @@ opens the **controller view** (nothing is read just by selecting it):
   and volume. Double-click a row to open the full disk view (which offers "← Back to controller"); each
   row's **↻** reads only that disk. Before the first scan the rows show "—" and a banner says so.
 
+The controller view has three tabs, from the important to the detailed:
+
+- **Overview**: one plain-language sentence on top that lists only the exceptions ("2 disks have
+  reallocated sectors; 3 volumes have no redundancy.", or just "Everything is in order."), then the
+  header, **↻ Scan controller**, the Volumes and Physical disks tables described above.
+- **Maintenance**: independent cards, each with a status dot, ONE status line and **Show details**
+  (technical names as tooltips). *Schedule*: patrol read and consistency check (a consistency check
+  that is not scheduled is shown as neutral information, not as an alarm) and the battery learn cycle.
+  *Battery*: e.g. "Optimal · 98 % · protects the cache for ~32 min", with capacity, charge cycles,
+  learn cycle and "replacement required". *Controller*: controller status and memory errors
+  (uncorrectable or ECC errors are a warning). *Operations*: rebuild / initialization / consistency
+  check in progress, with progress and time left only when the vendor tool reports them, or "No
+  operation in progress". Everything comes from the vendor tool reads Scan controller already makes:
+  no extra command.
+- **Trends**: for each physical disk, how defects (grown defects / reallocated sectors), uncorrected
+  errors and temperature changed in the last 7 and 30 days (▲ worse, ▼ better, = no change) next to the
+  current value, from your local scan history. With fewer than two readings it says "Not enough
+  history yet — scan again later". SmartLinux never predicts a time to failure.
+
+The local history (`~/.local/share/smartlinux/history.jsonl`, one line per scan) also records, when
+available, `grown_defects`, `uncorrected_errors` and `media_errors` (vendor tool); older lines without
+these fields keep working.
+
 SMART of the physical disks: `smartctl -j -a -d megaraid,N /dev/bus/H` (then `-d sat+megaraid,N` for SATA
 disks). SAS disks show health status, temperature, power-on time, start/stop cycles, **grown defect
 list**, corrected/uncorrected read/write/verify errors, non-medium errors and the self-test log. Health: a
@@ -396,7 +419,9 @@ smartlinux/
 │   │   ├── raid.py             # RAID controllers: -d megaraid,N disks, virtual drive detection
 │   │   ├── system_info.py      # Read-only host identity and storage controllers (local / SSH)
 │   │   ├── vendor_tools.py     # Optional perccli/storcli reads: whitelist, detection, RAID health
-│   │   ├── controller.py       # RAID controller as a unit: its disks and aggregate status
+│   │   ├── controller.py       # RAID controller as a unit: its disks, aggregate status, status sentence
+│   │   ├── maintenance.py      # Maintenance cards (schedule, battery, controller, operations)
+│   │   ├── trends.py           # 7 / 30 day changes from the local history (no predictions)
 │   │   ├── diagnostics.py      # Diagnostic bundle: fixed read-only commands, manifest, zip
 │   │   ├── sanitizer.py        # Consistent fake values for personal data + residue check
 │   │   ├── ssh_client.py       # Hardened paramiko client + automatic engine selection (AutoSSHClient)
@@ -436,6 +461,7 @@ smartlinux/
 │   ├── test_megaraid*.py           # Dell R630 / PERC H730 captures: discovery, SAS health, server info, UI
 │   ├── test_vendor_tools.py        # perccli captures: whitelist, detection, RAID health
 │   ├── test_controller_view.py     # Controller node / view, Scan controller, Scan all disks
+│   ├── test_maintenance_trends.py  # Overview sentence, Maintenance cards, Trends, history fields
 │   ├── test_sanitizer.py           # Synthetic personal values: replaced, consistent, residue check
 │   ├── test_diagnostic*.py         # Bundle whitelist, R630 replay, zip / manifest, size cap, dialog
 │   └── test_usb_mode_helper.py     # Root helper: argument checks, quirks editing, idempotence

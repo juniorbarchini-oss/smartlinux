@@ -12,12 +12,15 @@ from typing import List, Optional
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QHeaderView, QLabel, QProgressBar, QPushButton, QScrollArea,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QProgressBar, QPushButton, QScrollArea,
+    QTabWidget, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
 )
 
 from ..core import controller as ctl
+from ..core import maintenance
+from ..core import trends
 from ..core import vendor_tools as vt
+from ..core.history_manager import HistoryManager
 from ..core.models import DiskInfo, HealthStatus
 
 VOLUME_COLUMNS = ["Name", "RAID", "State", "Size", "OS device", "Disks", "Note"]
@@ -27,6 +30,58 @@ SCAN_COL = 0
 HEALTH_COLORS = {HealthStatus.HEALTHY: "#3fb950", HealthStatus.WARNING: "#e3b341",
                  HealthStatus.FAILED: "#f85149", HealthStatus.UNKNOWN: "#8b949e"}
 SCAN_TEXT = "↻ Scan controller"
+TREND_COLUMNS = ["Disk", "Measure", "Now", "Last 7 days", "Last 30 days"]
+NO_VENDOR_MAINTENANCE = ("Maintenance data comes from the vendor tool (perccli / storcli), which was not "
+                         "available in the last scan. See the Overview tab for why.")
+
+
+class CardWidget(QFrame):
+    """One Maintenance card: status dot + title, ONE status line, and "Show details"."""
+
+    def __init__(self, card: maintenance.Card, parent=None):
+        super().__init__(parent)
+        self.card = card
+        self.setProperty("class", "HeaderCard")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setSpacing(6)
+        top = QHBoxLayout()
+        self.title_lbl = QLabel(f"{card.status.icon}  {card.title}")
+        self.title_lbl.setStyleSheet("font-size: 15px; font-weight: bold; color: #ffffff;")
+        top.addWidget(self.title_lbl)
+        top.addStretch()
+        self.details_btn = QToolButton()
+        self.details_btn.setText("Show details")
+        self.details_btn.setCheckable(True)
+        self.details_btn.setEnabled(bool(card.details))
+        self.details_btn.toggled.connect(self._toggle)
+        top.addWidget(self.details_btn)
+        lay.addLayout(top)
+        self.line_lbl = QLabel(card.line)
+        self.line_lbl.setWordWrap(True)
+        self.line_lbl.setStyleSheet(f"font-size: 14px; color: {HEALTH_COLORS[card.status]};")
+        lay.addWidget(self.line_lbl)
+        self.details = QWidget()
+        grid = QGridLayout(self.details)
+        grid.setContentsMargins(0, 4, 0, 0)
+        grid.setHorizontalSpacing(18)
+        for row, (label, value, technical) in enumerate(card.details):
+            k = QLabel(label)
+            k.setStyleSheet("font-size: 13px; color: #8b949e;")
+            k.setToolTip(technical)                     # the technical name stays as a tooltip
+            v = QLabel(value)
+            v.setTextFormat(Qt.PlainText)
+            v.setToolTip(technical)
+            v.setStyleSheet("font-size: 13px; color: #c9d1d9;")
+            grid.addWidget(k, row, 0)
+            grid.addWidget(v, row, 1)
+        grid.setColumnStretch(1, 1)
+        self.details.setVisible(False)
+        lay.addWidget(self.details)
+
+    def _toggle(self, on: bool):
+        self.details.setVisible(on)
+        self.details_btn.setText("Hide details" if on else "Show details")
 
 
 def _fit_height(table: QTableWidget):
@@ -72,22 +127,36 @@ class ControllerView(QWidget):
         self._busy = False
         self._setup_ui()
 
-    def _setup_ui(self):
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+    @staticmethod
+    def _scroll_page():
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
-        outer.addWidget(scroll)
         content = QWidget()
         scroll.setWidget(content)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(12)
+        return scroll, layout
+
+    def _setup_ui(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        # same QTabWidget as the disk view's Diagnostics | History tabs
+        self.tabs = QTabWidget()
+        outer.addWidget(self.tabs)
+        scroll, layout = self._scroll_page()
+        self.tabs.addTab(scroll, "Overview")
 
         section = QLabel("RAID CONTROLLER")
         section.setStyleSheet("font-size: 13px; font-weight: bold; color: #8b949e; letter-spacing: 1px;")
         layout.addWidget(section)
+
+        # plain-language summary of the exceptions only
+        self.summary_lbl = QLabel("")
+        self.summary_lbl.setWordWrap(True)
+        self.summary_lbl.setStyleSheet("font-size: 15px; font-weight: 600; color: #c9d1d9;")
+        layout.addWidget(self.summary_lbl)
 
         # a) header
         card = QFrame()
@@ -159,6 +228,35 @@ class ControllerView(QWidget):
         layout.addWidget(self.disks_table)
         layout.addStretch(1)
 
+        # Maintenance: independent cards
+        scroll, self.maint_layout = self._scroll_page()
+        self.tabs.addTab(scroll, "Maintenance")
+        self.maint_empty_lbl = QLabel(ctl.NOT_SCANNED_TEXT)
+        self.maint_empty_lbl.setWordWrap(True)
+        self.maint_empty_lbl.setStyleSheet("font-size: 14px; color: #8b949e;")
+        self.maint_layout.addWidget(self.maint_empty_lbl)
+        self.cards_box = QVBoxLayout()
+        self.cards_box.setSpacing(12)
+        self.maint_layout.addLayout(self.cards_box)
+        self.maint_layout.addStretch(1)
+        self.cards: dict = {}
+
+        # Trends: change over 7 / 30 days from the local history
+        scroll, trends_layout = self._scroll_page()
+        self.tabs.addTab(scroll, "Trends")
+        info = QLabel("Change of each measure between your scans (▲ worse, ▼ better, = no change). "
+                      "Only real readings are compared: SmartLinux does not predict failures.")
+        info.setWordWrap(True)
+        info.setStyleSheet("font-size: 13px; color: #8b949e;")
+        trends_layout.addWidget(info)
+        self.trends_empty_lbl = QLabel(ctl.NOT_SCANNED_TEXT)
+        self.trends_empty_lbl.setWordWrap(True)
+        self.trends_empty_lbl.setStyleSheet("font-size: 14px; color: #8b949e;")
+        trends_layout.addWidget(self.trends_empty_lbl)
+        self.trends_table = self._table(TREND_COLUMNS)
+        trends_layout.addWidget(self.trends_table)
+        trends_layout.addStretch(1)
+
     @staticmethod
     def _caption(text: str) -> QLabel:
         lbl = QLabel(text)
@@ -213,6 +311,7 @@ class ControllerView(QWidget):
                     HealthStatus.WARNING: "Attention needed: see the tables below",
                     HealthStatus.FAILED: "Failure: see the tables below",
                     HealthStatus.UNKNOWN: "Some disks are not scanned yet or could not be read"}[status]
+        self.summary_lbl.setText(ctl.status_sentence(physical, virtual, report))
         self.status_lbl.setText(f"{status.icon}  {text}")
         self.status_lbl.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {HEALTH_COLORS[status]};")
         self.tool_lbl.setText(tool_text(state, local=not server_id))
@@ -222,6 +321,8 @@ class ControllerView(QWidget):
         self.not_scanned_lbl.setVisible(not scanned)
         self._fill_volumes(report)
         self._fill_disks(report)
+        self._fill_maintenance(report, scanned)
+        self._fill_trends()
         self.set_busy(self._busy)
 
     def _fill_volumes(self, report):
@@ -305,6 +406,55 @@ class ControllerView(QWidget):
             self.disks_table.setRowHeight(r, max(self.disks_table.rowHeight(r), btn.sizeHint().height() + 20))
             self.row_scan_buttons.append(btn)
         _fit_height(self.disks_table)
+
+    def _fill_maintenance(self, report, scanned: bool):
+        while self.cards_box.count():
+            item = self.cards_box.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.cards = {}
+        cards = maintenance.build_cards(report)
+        if not cards:
+            self.maint_empty_lbl.setText(NO_VENDOR_MAINTENANCE if scanned else ctl.NOT_SCANNED_TEXT)
+        self.maint_empty_lbl.setVisible(not cards)
+        for card in cards:
+            widget = CardWidget(card)
+            self.cards[card.key] = widget
+            self.cards_box.addWidget(widget)
+
+    def _fill_trends(self):
+        rows = []
+        for disk in self.physical:
+            if not ctl.is_scanned(disk) or not disk.serial or disk.serial == "N/A":
+                continue                 # no reading yet: nothing identifies its history
+            name = f"slot {disk.slot}" if disk.slot is not None else disk.name
+            rows.append((name, disk, trends.disk_trend(HistoryManager.get_history(disk))))
+        self.trends_empty_lbl.setVisible(not rows)
+        self.trends_table.setVisible(bool(rows))
+        table = self.trends_table
+        table.clearSpans()
+        table.setRowCount(0)
+        for name, disk, trend in rows:
+            if not trend.enough:
+                r = table.rowCount()
+                table.insertRow(r)
+                table.setItem(r, 0, QTableWidgetItem(name))
+                table.setItem(r, 1, QTableWidgetItem(trends.NOT_ENOUGH))
+                table.setSpan(r, 1, 1, len(TREND_COLUMNS) - 1)
+                continue
+            for i, mt in enumerate(trend.metrics):
+                r = table.rowCount()
+                table.insertRow(r)
+                values = [name if i == 0 else "", mt.metric.label, mt.current_text] + [c.text for c in mt.changes]
+                for c, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    if c == 1:
+                        item.setToolTip(mt.metric.tooltip)
+                    if c >= 3 and value.startswith(trends.WORSE):
+                        item.setForeground(QColor(HEALTH_COLORS[HealthStatus.WARNING]))
+                    table.setItem(r, c, item)
+        if rows:
+            _fit_height(table)
 
     def _on_disk_activated(self, row: int, _col: int):
         if 0 <= row < len(self.physical):

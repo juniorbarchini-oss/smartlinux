@@ -98,3 +98,73 @@ def storage_controller_for(info, label: str):
         if c.label == label:
             return c
     return None
+
+
+# ---- Overview status sentence ----------------------------------------------------------------
+
+ALL_GOOD = "Everything is in order."
+
+
+def _count(n: int, singular: str, plural: str) -> str:
+    return f"{n} {singular if n == 1 else plural}"
+
+
+def _defects(disk: DiskInfo) -> int:
+    text = defects_text(disk)
+    try:
+        return int(str(text).replace(",", ""))
+    except ValueError:
+        return 0
+
+
+def status_sentence(physical: List[DiskInfo], virtual: List[DiskInfo], report=None) -> str:
+    """Plain-language summary of the EXCEPTIONS only ("2 disks have reallocated sectors; 1 volume
+    has no redundancy."). One short line when everything is fine."""
+    if not has_scan_data(physical, report):
+        return NOT_SCANNED_TEXT
+    parts: List[str] = []
+    failed = [d for d in physical if is_scanned(d) and d.health_status == HealthStatus.FAILED]
+    unreadable = [d for d in physical if d.error_message and not d.attributes and d.last_scanned is not None]
+    unscanned = [d for d in physical if not is_scanned(d) and not d.error_message]
+    defects = [d for d in physical if is_scanned(d) and _defects(d) > 0]
+    other_warn = [d for d in physical if is_scanned(d) and d.health_status == HealthStatus.WARNING
+                  and d not in defects]
+    if failed:
+        parts.append(_count(len(failed), "disk reports a failure", "disks report a failure"))
+    if defects:
+        parts.append(_count(len(defects), "disk has reallocated sectors", "disks have reallocated sectors"))
+    if other_warn:
+        parts.append(_count(len(other_warn), "disk needs attention", "disks need attention"))
+    if unreadable:
+        parts.append(_count(len(unreadable), "disk could not be read", "disks could not be read"))
+    if report is not None:
+        drives = report.drives
+        ctl_failed = [d for d in drives if d.state in ("Failed", "Offln", "UBad")]
+        predictive = [d for d in drives if d.predictive_failures or d.smart_alert]
+        media = [d for d in drives if d.media_errors]
+        if ctl_failed:
+            parts.append(_count(len(ctl_failed), "disk is failed or offline on the controller",
+                                "disks are failed or offline on the controller"))
+        if predictive:
+            parts.append(_count(len(predictive), "disk predicts a failure", "disks predict a failure"))
+        if media:
+            parts.append(_count(len(media), "disk has media errors", "disks have media errors"))
+        degraded = [v for v in report.volumes if v.state in ("Dgrd", "Pdgd")]
+        offline = [v for v in report.volumes if v.state.startswith("OfLn")]
+        single = [v for v in report.volumes if single_drive_volume(v)]
+        if offline:
+            parts.append(_count(len(offline), "volume is offline", "volumes are offline"))
+        if degraded:
+            parts.append(_count(len(degraded), "volume has lost redundancy", "volumes have lost redundancy"))
+        if single:
+            parts.append(_count(len(single), "volume has no redundancy", "volumes have no redundancy"))
+        if report.battery.present and report.battery.level > 0:
+            parts.append("the battery needs attention")
+        if report.status and report.status.strip().lower() != "optimal":
+            parts.append(f"the controller reports {report.status}")
+    if unscanned:
+        parts.append(_count(len(unscanned), "disk is not scanned yet", "disks are not scanned yet"))
+    if not parts:
+        return ALL_GOOD
+    text = "; ".join(parts) + "."
+    return text[0].upper() + text[1:]

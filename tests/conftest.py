@@ -114,3 +114,12 @@ def _isolated_mountinfo(request, tmp_path):
     module.MOUNTINFO = str(path)
     yield path
     module.MOUNTINFO = old
+
+
+@pytest.fixture(autouse=True)
+def _isolated_history(tmp_path, monkeypatch):
+    """Never read or write the user's real ~/.local/share/smartlinux/history.jsonl in tests
+    (the controller view reads it to show Trends)."""
+    from smartlinux.core import history_manager
+    monkeypatch.setattr(history_manager, "HISTORY_DIR", str(tmp_path / "history"))
+    monkeypatch.setattr(history_manager, "HISTORY_FILE", str(tmp_path / "history" / "history.jsonl"))

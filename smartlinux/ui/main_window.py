@@ -1,8 +1,10 @@
+import copy
 import getpass
 import os
 import socket
 import subprocess
 import time
+from types import SimpleNamespace
 from typing import List, Optional, Set, Dict, Tuple
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
@@ -11,7 +13,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices
 
-from ..core.models import DiskInfo, ServerConfig
+from ..core.models import DiskInfo, HealthStatus, ServerConfig
 from ..core.detector import LocalDiskDetector
 from ..core.ssh_client import create_ssh_client, AutoSSHClient, host_key_fingerprint, trust_host_key, known_hosts_label
 from ..core.config_manager import ConfigManager, AppSettings
@@ -25,10 +27,13 @@ from ..core import raid
 from ..core import system_info
 from ..core import vendor_tools
 from ..core import diagnostics
+from ..core import controller as ctl
 
 from .sidebar import SidebarWidget
 from .detail_panel import DetailPanel
-from .server_panel import ServerPanel
+from .server_panel import ServerPanel, ControllerSummary
+from .controller_view import ControllerView
+from .serial_scan import SerialScanWorker
 from .server_dialog import ServerDialog
 from .export_dialog import ExportDialog
 from .setup_dialog import SetupDependenciesDialog
@@ -95,11 +100,15 @@ class MainWindow(QMainWindow):
         # when the user connects / refreshes a host (and when the local list loads), never on a timer.
         self._system_info: Dict[str, system_info.SystemInfo] = {}
         self._want_local_system_info = False
-        # perccli/storcli per host ("" = this computer) and controller PCI slot. Only filled by a
-        # user Refresh / connect, never at startup, on hotplug or on a timer.
+        # perccli/storcli per host ("" = this computer) and controller PCI slot (or label when the
+        # PCI slot is unknown). Only filled by "Scan controller", never at startup, on refresh,
+        # hotplug or a timer. The old "vendor_tool_modes" setting is no longer read.
         self._vendor_states: Dict[str, Dict[str, vendor_tools.ControllerVendorState]] = {}
-        self._want_local_vendor = False
         self._host_drives: Dict[str, List[DiskInfo]] = {}
+        # serial scans ("Scan controller", "Scan all disks", a row's ↻): one at a time
+        self._scan_worker: Optional[SerialScanWorker] = None
+        self._scan_target: Optional[tuple] = None
+        self._last_controller_scan: Dict[tuple, float] = {}
 
         # Hotplug auto-detection watcher
         self._hotplug_watcher: Optional[DeviceHotplugWatcher] = None
@@ -185,6 +194,7 @@ class MainWindow(QMainWindow):
         self.sidebar.local_refresh_requested.connect(self._on_local_refresh_clicked)
         self.sidebar.eject_requested.connect(self._eject_local_disk)
         self.sidebar.host_selected.connect(self._on_host_selected)
+        self.sidebar.controller_selected.connect(self._on_controller_selected)
         splitter.addWidget(self.sidebar)
 
         self.detail_stack = QStackedWidget()
@@ -196,15 +206,25 @@ class MainWindow(QMainWindow):
         self.detail_panel.eject_requested.connect(self._eject_local_disk)
         self.detail_panel.self_test_requested.connect(self._run_self_test)
         self.detail_panel.compat_mode_requested.connect(self._on_compat_mode_requested)
+        self.detail_panel.back_to_controller_requested.connect(self._on_back_to_controller)
         self.detail_stack.addWidget(self.detail_panel)
 
         self.server_panel = ServerPanel()
         self.server_panel.setObjectName("DetailContainer")
         self.server_panel.refresh_requested.connect(self._on_server_panel_refresh)
-        self.server_panel.vendor_mode_changed.connect(self._on_vendor_mode_changed)
-        self.server_panel.disk_link_requested.connect(self._on_vendor_disk_link)
         self.server_panel.diagnostic_requested.connect(self._on_diagnostic_requested)
+        self.server_panel.scan_all_requested.connect(self._on_scan_all_disks)
+        self.server_panel.cancel_requested.connect(self._cancel_serial_scan)
+        self.server_panel.controller_open_requested.connect(self._open_controller)
         self.detail_stack.addWidget(self.server_panel)
+
+        self.controller_view = ControllerView()
+        self.controller_view.setObjectName("DetailContainer")
+        self.controller_view.scan_requested.connect(self._on_scan_controller)
+        self.controller_view.cancel_requested.connect(self._cancel_serial_scan)
+        self.controller_view.disk_scan_requested.connect(self._on_scan_one_disk)
+        self.controller_view.disk_open_requested.connect(self._open_disk_from_controller)
+        self.detail_stack.addWidget(self.controller_view)
         splitter.addWidget(self.detail_stack)
 
         splitter.setStretchFactor(0, 0)
@@ -369,57 +389,40 @@ class MainWindow(QMainWindow):
         self._discover_local_drives()
 
     def _on_local_refresh_clicked(self):
-        """The user's Refresh: like startup, plus the vendor tool check / read (if chosen)."""
-        self._want_local_vendor = True
+        """The user's Refresh: list the drives and read this computer's identity again."""
         self._refresh_local_host()
 
     def _discover_local_drives(self):
         """Lists local drives (never reads SMART)."""
         with_system_info, self._want_local_system_info = self._want_local_system_info, False
-        with_vendor, self._want_local_vendor = self._want_local_vendor and with_system_info, False
         self.status_bar.showMessage("Detecting local storage devices...")
         self._start_worker(
             self._do_discover_local,
             on_result=self._on_local_listed,
             on_error=lambda err: self.status_bar.showMessage(f"Error enumerating local drives: {err}"),
-            with_system_info=with_system_info,
-            vendor_modes=self._vendor_modes() if with_vendor else None
+            with_system_info=with_system_info
         )
 
     @staticmethod
-    def _vendor_modes() -> Dict[str, str]:
-        return vendor_tools.load_modes(AppSettings.get)
-
-    @staticmethod
-    def _do_discover_local(with_system_info: bool, vendor_modes: Optional[Dict[str, str]] = None):
+    def _do_discover_local(with_system_info: bool):
         drives = LocalDiskDetector.discover_drives()
         info = None
-        vendor = None
         if with_system_info:
             try:
                 info = system_info.collect_local()
             except Exception as e:  # identity is a bonus: never blocks the drive list
                 print(f"Could not read local system information: {e}")
-        if info is not None and vendor_modes is not None:
-            try:
-                vendor = vendor_tools.read_host(vendor_tools.LocalHost(), info.controllers, vendor_modes, "")
-            except Exception as e:  # incl. CommandNotAllowed: never blocks the drive list
-                print(f"Vendor tool read failed: {e}")
-        return drives, info, vendor
+        return drives, info
 
     def _on_local_listed(self, result):
         drives, info = result[0], result[1]
-        vendor = result[2] if len(result) > 2 else None
         if info is not None:
             self._system_info[""] = info
-        if vendor is not None:
-            self._vendor_states[""] = vendor
         system_info.assign_controllers(self._system_info.get(""), drives)
         vendor_tools.annotate_disks(self._vendor_states.get("", {}), drives)
         self._host_drives[""] = drives
         self._on_local_drives_discovered(drives)
-        if self.detail_stack.currentWidget() is self.server_panel and self.server_panel.server_id == "":
-            self._on_host_selected("")
+        self._refresh_host_views("")
 
     def _on_local_drives_discovered(self, drives: List[DiskInfo]):
         updated_drives = []
@@ -497,11 +500,10 @@ class MainWindow(QMainWindow):
             self._do_discover_remote_drives,
             on_result=lambda res: self._on_remote_server_listed(server_id, res),
             on_error=lambda err: self._on_remote_server_error(server_id, err),
-            srv=srv,
-            vendor_modes=self._vendor_modes()
+            srv=srv
         )
 
-    def _do_discover_remote_drives(self, srv: ServerConfig, vendor_modes: Optional[Dict[str, str]] = None):
+    def _do_discover_remote_drives(self, srv: ServerConfig):
         client = create_ssh_client(srv)
         self._ssh_clients[srv.id] = client
         ok, msg = client.connect(timeout=8)
@@ -514,27 +516,17 @@ class MainWindow(QMainWindow):
             info = client.collect_system_info()
         except Exception as e:  # identity is a bonus: never blocks the drive list
             print(f"Could not read system information of {srv.name}: {e}")
-        vendor = None
-        if info is not None and vendor_modes is not None:
-            try:
-                vendor = vendor_tools.read_host(client.vendor_host(), info.controllers, vendor_modes, srv.id)
-            except Exception as e:  # incl. CommandNotAllowed: never blocks the drive list
-                print(f"Vendor tool read failed on {srv.name}: {e}")
-        return drives, info, vendor
+        return drives, info
 
     def _on_remote_server_listed(self, server_id: str, result):
         drives, info = result[0], result[1]
-        vendor = result[2] if len(result) > 2 else None
         if info is not None:
             self._system_info[server_id] = info
-        if vendor is not None:
-            self._vendor_states[server_id] = vendor
         system_info.assign_controllers(self._system_info.get(server_id), drives)
         vendor_tools.annotate_disks(self._vendor_states.get(server_id, {}), drives)
         self._host_drives[server_id] = drives
         self._on_remote_drives_discovered(server_id, drives)
-        if self.detail_stack.currentWidget() is self.server_panel and self.server_panel.server_id == server_id:
-            self._on_host_selected(server_id)
+        self._refresh_host_views(server_id)
 
     @staticmethod
     def _raid_summary(drives: List[DiskInfo]) -> str:
@@ -565,7 +557,9 @@ class MainWindow(QMainWindow):
             info = self._system_info.get("")
             name = f"💻  This computer{f' ({info.hostname})' if info and info.hostname else ''}"
         self.server_panel.display(server_id, name, self._system_info.get(server_id),
-                                  self._vendor_states.get(server_id))
+                                  self._controller_summaries(server_id))
+        self.server_panel.set_busy(self._scan_target is not None and self._scan_target[1] == server_id
+                                   and self._scan_target[0] == "host")
         self.detail_stack.setCurrentWidget(self.server_panel)
 
     def _on_server_panel_refresh(self, server_id: str):
@@ -574,33 +568,199 @@ class MainWindow(QMainWindow):
         else:
             self._on_local_refresh_clicked()
 
-    # ---------------- VENDOR TOOL (perccli / storcli, read-only, opt-in per controller) ----------------
+    # ---------------- RAID CONTROLLER VIEW + SERIAL SCANS ----------------
 
-    def _on_vendor_mode_changed(self, server_id: str, pci_slot: str, mode: str):
-        """Saves the choice. Nothing runs here: the next Refresh / connect reads the controller."""
-        modes = dict(AppSettings.get(vendor_tools.SETTINGS_KEY, {}) or {})
-        modes[vendor_tools.mode_key(server_id, pci_slot)] = mode
-        AppSettings.set(**{vendor_tools.SETTINGS_KEY: modes})
-        state = self._vendor_states.get(server_id, {}).get(pci_slot)
-        if state is not None:
-            state.mode = mode
-        drives = self._host_drives.get(server_id)
-        if drives is not None:
-            vendor_tools.annotate_disks(self._vendor_states.get(server_id, {}), drives)
-            if server_id:
-                self.sidebar.set_server_drives(server_id, drives)
-            else:
-                self.sidebar.set_local_disks(drives)
-        self._on_host_selected(server_id)
-        if mode == vendor_tools.MODE_VENDOR and not (state and state.report):
-            self.status_bar.showMessage("Vendor tool selected: click Refresh to read the controller (read-only).")
-
-    # ---------------- DIAGNOSTIC BUNDLE (read-only, sanitized, saved locally only) ----------------
-
-    def _diagnostic_disks(self, server_id: str) -> List[DiskInfo]:
+    def _current_disks(self, server_id: str) -> List[DiskInfo]:
         """The host's listed disks, with their latest reading when there is one."""
         listed = self._host_drives.get(server_id, [])
         return [self._all_known_disks.get(d.host_key, d) for d in listed]
+
+    def _controller_key(self, server_id: str, label: str) -> str:
+        storage = ctl.storage_controller_for(self._system_info.get(server_id), label)
+        return storage.pci_slot if storage and storage.pci_slot else label
+
+    def _controller_state(self, server_id: str, label: str) -> Optional[vendor_tools.ControllerVendorState]:
+        return self._vendor_states.get(server_id, {}).get(self._controller_key(server_id, label))
+
+    def _controller_summaries(self, server_id: str) -> List[ControllerSummary]:
+        out = []
+        for label, group in ctl.group_by_controller(self._current_disks(server_id)).items():
+            state = self._controller_state(server_id, label)
+            report = state.report if state else None
+            out.append(ControllerSummary(
+                label=label, status=ctl.controller_health(group.physical, group.virtual, report),
+                physical=len(group.physical), virtual=len(group.virtual),
+                scanned=ctl.has_scan_data(group.physical, report)))
+        return out
+
+    def _on_controller_selected(self, server_id: str, label: str):
+        """Opens the controller view. Display only: nothing is read here."""
+        group = ctl.group_by_controller(self._current_disks(server_id)).get(label)
+        if group is None:
+            return
+        self.controller_view.display(
+            server_id, label, group.physical, group.virtual,
+            storage=ctl.storage_controller_for(self._system_info.get(server_id), label),
+            state=self._controller_state(server_id, label),
+            last_scan=self._last_controller_scan.get((server_id, label)))
+        self.controller_view.set_busy(self._scan_target == ("controller", server_id, label)
+                                      or (self._scan_target is not None and self._scan_target[0] == "disk"
+                                          and self._scan_target[1] == server_id))
+        self.detail_stack.setCurrentWidget(self.controller_view)
+
+    def _open_controller(self, server_id: str, label: str):
+        self.sidebar.select_controller(server_id, label)
+        self._on_controller_selected(server_id, label)
+
+    def _on_back_to_controller(self, disk: DiskInfo):
+        self._open_controller(disk.server_id or "", disk.controller or "")
+
+    def _open_disk_from_controller(self, disk: DiskInfo):
+        current = self._all_known_disks.get(disk.host_key, disk)
+        self.sidebar.select_disk(current)
+        self._on_disk_selected_in_sidebar(current)
+
+    def _refresh_host_views(self, server_id: str):
+        """Re-renders the Server panel / controller view of this host if one is on screen."""
+        widget = self.detail_stack.currentWidget()
+        if widget is self.server_panel and self.server_panel.server_id == server_id:
+            self._on_host_selected(server_id)
+        elif widget is self.controller_view and self.controller_view.server_id == server_id:
+            if ctl.group_by_controller(self._current_disks(server_id)).get(self.controller_view.label):
+                self._on_controller_selected(server_id, self.controller_view.label)
+
+    def _client_for(self, server_id: str):
+        """The connected SSH client of a server (connects if needed; worker thread)."""
+        srv = next((s for s in self._active_servers if s.id == server_id), None)
+        if not srv:
+            raise Exception("Server not found in configuration.")
+        client = self._ssh_clients.get(server_id)
+        if not client or not client.is_connected():
+            client = create_ssh_client(srv)
+            ok, msg = client.connect(timeout=8)
+            if not ok:
+                raise Exception(msg)
+            self._ssh_clients[server_id] = client
+        return client
+
+    def _vendor_job(self, server_id: str, label: str, physical: List[DiskInfo]):
+        """The single vendor tool read of a "Scan controller" (None when the controller is not a
+        MegaRAID/PERC). Uses vendor_tools as is: fixed candidates, read-only whitelist."""
+        storage = ctl.storage_controller_for(self._system_info.get(server_id), label)
+        if storage is None and physical and all(
+                raid.passthrough_family(d.smart_dev_type) == "megaraid" for d in physical):
+            # no lspci data: a single MegaRAID controller is still /c0
+            storage = SimpleNamespace(pci_slot=label, driver="megaraid_sas", label=label)
+        if storage is None or not vendor_tools.supported(storage):
+            return None
+        modes = {vendor_tools.mode_key(server_id, storage.pci_slot): vendor_tools.MODE_VENDOR}
+
+        def job():
+            host = vendor_tools.LocalHost() if not server_id else self._client_for(server_id).vendor_host()
+            states = vendor_tools.read_host(host, [storage], modes, server_id)
+            return label, states.get(storage.pci_slot)
+        return job
+
+    def _on_scan_controller(self, server_id: str, label: str):
+        group = ctl.group_by_controller(self._current_disks(server_id)).get(label)
+        if group is None:
+            return
+        self._start_serial_scan(("controller", server_id, label), group.physical,
+                                self._vendor_job(server_id, label, group.physical))
+
+    def _on_scan_one_disk(self, disk: DiskInfo):
+        self._start_serial_scan(("disk", disk.server_id or "", disk.controller), [disk], None)
+
+    def _on_scan_all_disks(self, server_id: str):
+        disks = [d for d in self._current_disks(server_id) if not d.is_virtual]
+        if not disks:
+            self.status_bar.showMessage("No disks listed yet: click Refresh first.")
+            return
+        self._start_serial_scan(("host", server_id), disks, None)
+
+    def _start_serial_scan(self, target: tuple, disks: List[DiskInfo], vendor_job):
+        if self._scan_worker is not None:
+            self.status_bar.showMessage("A scan is already running. Wait for it or cancel it first.")
+            return
+        worker = SerialScanWorker(disks, self._do_read_single_disk, vendor_job)
+        self._scan_worker, self._scan_target = worker, target
+        worker.progress.connect(self._on_serial_progress)
+        worker.vendor_done.connect(lambda res, sid=target[1]: self._on_vendor_scanned(sid, res))
+        worker.vendor_failed.connect(lambda err: self.status_bar.showMessage(f"Vendor tool read failed: {err}"))
+        worker.disk_done.connect(lambda _orig, updated: self._store_scanned_disk(updated))
+        worker.disk_failed.connect(self._on_serial_disk_failed)
+        worker.scan_finished.connect(self._on_serial_finished)
+        self._set_scan_busy(True)
+        self._launch_scan(worker)
+
+    def _launch_scan(self, worker: SerialScanWorker):
+        self._active_workers.add(worker)
+        worker.finished.connect(lambda: (self._active_workers.discard(worker), worker.deleteLater()))
+        worker.start()
+
+    def _set_scan_busy(self, busy: bool):
+        target = self._scan_target
+        if target is None:
+            return
+        if target[0] == "host":
+            if self.server_panel.server_id == target[1]:
+                self.server_panel.set_busy(busy)
+        elif self.controller_view.server_id == target[1]:
+            self.controller_view.set_busy(busy)
+
+    def _on_serial_progress(self, text: str, done: int, total: int):
+        target = self._scan_target
+        if target is None:
+            return
+        if text:
+            self.status_bar.showMessage(f"Scanning: {text}")
+        panel = self.server_panel if target[0] == "host" else self.controller_view
+        if panel.server_id == target[1]:
+            panel.set_progress(text, done, total)
+
+    def _on_vendor_scanned(self, server_id: str, result):
+        label, state = result
+        if state is None:
+            return
+        key = self._controller_key(server_id, label)
+        self._vendor_states.setdefault(server_id, {})[key] = state
+        disks = self._current_disks(server_id)
+        listed = self._host_drives.get(server_id, [])
+        vendor_tools.annotate_disks(self._vendor_states[server_id], disks + [d for d in listed if d not in disks])
+        for d in disks:
+            self.sidebar.update_disk_info(d)
+        self.sidebar.set_controller_report(server_id, label, state.report)
+        tool = state.tool
+        if tool and not tool.installed:
+            self.status_bar.showMessage("Vendor tool not installed: reading the disks with smartctl.")
+        elif tool and not tool.usable:
+            self.status_bar.showMessage(f"{tool.name} needs administrator rights: reading the disks with smartctl.")
+        self._refresh_host_views(server_id)
+
+    def _on_serial_disk_failed(self, disk: DiskInfo, error: str):
+        failed = copy.copy(self._all_known_disks.get(disk.host_key, disk))
+        failed.error_message = error
+        failed.attributes = []
+        failed.health_status = HealthStatus.UNKNOWN
+        failed.health_summary = "SMART read failed"
+        self._store_scanned_disk(failed)
+
+    def _on_serial_finished(self, cancelled: bool):
+        target = self._scan_target
+        self._set_scan_busy(False)
+        self._scan_worker, self._scan_target = None, None
+        if target and target[0] == "controller":
+            self._last_controller_scan[(target[1], target[2])] = time.time()
+        self.status_bar.showMessage("Scan cancelled." if cancelled else "Scan complete.")
+        if target:
+            self._refresh_host_views(target[1])
+
+    def _cancel_serial_scan(self):
+        if self._scan_worker is not None:
+            self._scan_worker.cancel()
+            self.status_bar.showMessage("Cancelling after the current disk…")
+
+    # ---------------- DIAGNOSTIC BUNDLE (read-only, sanitized, saved locally only) ----------------
 
     def _make_diagnostic_job(self, server_id: str, disks: List[DiskInfo]):
         info = self._system_info.get(server_id)
@@ -637,7 +797,7 @@ class MainWindow(QMainWindow):
         return job
 
     def _on_diagnostic_requested(self, server_id: str):
-        disks = self._diagnostic_disks(server_id)
+        disks = self._current_disks(server_id)
         srv = next((s for s in self._active_servers if s.id == server_id), None) if server_id else None
         label = f"{srv.name} ({srv.host})" if srv else "this computer"
         engine = getattr(self._ssh_clients.get(server_id), "_engine", None) if server_id else None
@@ -645,19 +805,6 @@ class MainWindow(QMainWindow):
                                                 bool(getattr(engine, "uses_text_mode", False)))
         dialog = DiagnosticBundleDialog(label, commands, self._make_diagnostic_job(server_id, disks), self)
         dialog.exec()
-
-    def _on_vendor_disk_link(self, server_id: str, kind: str, value: str):
-        for disk in self._host_drives.get(server_id, []):
-            if kind == "os_drive" and disk.is_virtual and disk.device_path == value:
-                break
-            if kind == "smartctl" and disk.smart_dev_type and disk.smart_dev_type.split("+")[-1] == value:
-                break
-        else:
-            self.status_bar.showMessage(f"No disk in the sidebar matches {value}.")
-            return
-        known = self._all_known_disks.get(disk.host_key, disk)
-        self.sidebar.select_disk(known)
-        self._on_disk_selected_in_sidebar(known)
 
     def _on_remote_server_error(self, server_id: str, error_msg: str):
         self.sidebar.set_server_drives(server_id, [], error=error_msg)
@@ -746,24 +893,20 @@ class MainWindow(QMainWindow):
                 print(f"USB compatibility-mode detection failed: {e}")
             return local
         else:
-            server_id = disk.server_id
-            srv = next((s for s in self._active_servers if s.id == server_id), None)
-            if not srv:
-                raise Exception("Server not found in configuration.")
-            
-            client = self._ssh_clients.get(server_id)
-            if not client or not client.is_connected():
-                client = create_ssh_client(srv)
-                ok, msg = client.connect(timeout=8)
-                if not ok:
-                    raise Exception(msg)
-                self._ssh_clients[server_id] = client
-
+            client = self._client_for(disk.server_id)
             if passthrough:
                 return client.read_remote_drive_smart(disk.device_path, dev_type=disk.smart_dev_type)
             return client.read_remote_drive_smart(disk.device_path)
 
     def _on_single_disk_scanned(self, updated_disk: DiskInfo):
+        self._store_scanned_disk(updated_disk)
+        self.detail_panel.display_disk(updated_disk)
+        self.detail_panel.set_loading(False, "SMART read complete.")
+        self.status_bar.showMessage(f"Diagnostics complete: {updated_disk.model} [{updated_disk.health_status.label}].")
+
+    def _store_scanned_disk(self, updated_disk: DiskInfo):
+        """Same bookkeeping for every SMART read (single disk or serial scan): last scanned time,
+        cache, history and the sidebar."""
         updated_disk.last_scanned = time.time()
         key = updated_disk.host_key
         listed = self._all_known_disks.get(key)
@@ -779,11 +922,9 @@ class MainWindow(QMainWindow):
                 updated_disk.name = listed.name
         self._all_known_disks[key] = updated_disk
         HistoryManager.append_snapshot(updated_disk)
-
-        self.detail_panel.display_disk(updated_disk)
         self.sidebar.update_disk_info(updated_disk)
-        self.detail_panel.set_loading(False, "SMART read complete.")
-        self.status_bar.showMessage(f"Diagnostics complete: {updated_disk.model} [{updated_disk.health_status.label}].")
+        if self._scan_target is not None:
+            self._refresh_host_views(updated_disk.server_id or "")
 
     # ---------------- NATIVE SELF-TEST (fire-and-forget, checked via a later scan) ----------------
 

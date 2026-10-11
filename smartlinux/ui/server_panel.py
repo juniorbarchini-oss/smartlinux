@@ -1,43 +1,38 @@
-"""Server panel: what SmartLinux recognised about a host (identity card + storage controllers).
+"""Server panel: what SmartLinux recognised about a host (identity card + storage controllers),
+its RAID controllers (each opens the controller view) and "↻ Scan all disks".
 
-Display only. The data is collected when the user connects / refreshes the host, never here.
+Display only. The data is collected when the user connects / refreshes the host, and disks are
+read only when the user clicks a scan button.
 """
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QPushButton,
-    QRadioButton, QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QProgressBar, QPushButton,
+    QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from ..core import vendor_tools as vt
+from ..core import controller as ctl
+from ..core.models import HealthStatus
 from ..core.system_info import SystemInfo
 
 CONTROLLER_COLUMNS = ["Controller", "Type", "PCI", "Driver", "Physical disks", "Virtual disks", "Firmware"]
-VOLUME_COLUMNS = ["DG/VD", "Name", "Type", "State", "Cache", "Size", "OS drive", "Physical drives",
-                  "Active operations", "Notes"]
-DRIVE_COLUMNS = ["EID:Slt", "DID", "smartctl", "Volume", "State", "Media errors", "Other errors",
-                 "Predictive failures", "SMART alert", "Temperature", "Link speed", "Status"]
-LEVEL_COLORS = {vt.OK: "#3fb950", vt.ATTENTION: "#e3b341", vt.WARNING: "#e3b341", vt.FAILED: "#f85149"}
-
-STANDARD_TEXT = "Standard read (smartctl)"
-VENDOR_TEXT = "Vendor tool"
+RAID_COLUMNS = ["RAID controller", "Status", "Physical disks", "Virtual disks"]
+STATUS_TEXT = {HealthStatus.HEALTHY: "OK", HealthStatus.WARNING: "Attention",
+               HealthStatus.FAILED: "Failure", HealthStatus.UNKNOWN: "Not scanned"}
 
 
 @dataclass
-class VendorSection:
-    """Widgets of one controller's "Vendor tool" section (kept for the main window and tests)."""
-    standard_btn: QRadioButton
-    vendor_btn: QRadioButton
-    info_lbl: QLabel
-    status_lbl: Optional[QLabel] = None
-    volumes_table: Optional[QTableWidget] = None
-    drives_table: Optional[QTableWidget] = None
-    battery_lbl: Optional[QLabel] = None
+class ControllerSummary:
+    """One row of the RAID controllers table (built by the main window from the host's disks)."""
+    label: str
+    status: HealthStatus
+    physical: int
+    virtual: int
+    scanned: bool
 
 
 def _fit_height(table: QTableWidget):
@@ -52,15 +47,16 @@ class ServerPanel(QWidget):
     """Identity card ("Dell PowerEdge R630 · 2 × Intel Xeon ...") and a storage controller table."""
 
     refresh_requested = Signal(str)  # server_id ("" = this computer)
-    vendor_mode_changed = Signal(str, str, str)  # server_id, controller PCI slot, mode
-    disk_link_requested = Signal(str, str, str)  # server_id, "smartctl" | "os_drive", value
     diagnostic_requested = Signal(str)           # server_id: open the "Export diagnostic bundle" dialog
+    scan_all_requested = Signal(str)             # server_id: read every disk of the host, in series
+    cancel_requested = Signal()
+    controller_open_requested = Signal(str, str)  # server_id, controller label
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.server_id: Optional[str] = None
         self.info: Optional[SystemInfo] = None
-        self.vendor_sections: Dict[str, VendorSection] = {}
+        self.controllers: List[ControllerSummary] = []
         self._setup_ui()
 
     def _setup_ui(self):
@@ -136,10 +132,45 @@ class ServerPanel(QWidget):
         self.table.setAlternatingRowColors(True)
         layout.addWidget(self.table)
 
-        # Per MegaRAID controller: Standard read / Vendor tool (perccli, storcli; read-only)
-        self.vendor_container = QVBoxLayout()
-        self.vendor_container.setSpacing(14)
-        layout.addLayout(self.vendor_container)
+        # RAID controllers: each row opens the controller view
+        self.discovery_lbl = QLabel(ctl.DISCOVERY_TEXT)
+        self.discovery_lbl.setObjectName("WarningBanner")
+        self.discovery_lbl.setWordWrap(True)
+        self.discovery_lbl.setStyleSheet("font-size: 14px; color: #e3b341; padding: 10px; font-weight: 600;")
+        self.discovery_lbl.setVisible(False)
+        layout.addWidget(self.discovery_lbl)
+        self.raid_caption = QLabel("RAID CONTROLLERS")
+        self.raid_caption.setStyleSheet("font-size: 13px; font-weight: bold; color: #8b949e; letter-spacing: 1px;")
+        layout.addWidget(self.raid_caption)
+        self.raid_table = QTableWidget(0, len(RAID_COLUMNS))
+        self.raid_table.setHorizontalHeaderLabels(RAID_COLUMNS)
+        self.raid_table.verticalHeader().setVisible(False)
+        self.raid_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.raid_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.raid_table.setToolTip("Double-click a controller to open it")
+        self.raid_table.cellDoubleClicked.connect(self._on_raid_row)
+        layout.addWidget(self.raid_table)
+
+        # Scan all disks (also for hosts without a RAID controller)
+        scan_row = QHBoxLayout()
+        self.scan_all_btn = QPushButton("↻ Scan all disks")
+        self.scan_all_btn.setObjectName("PrimaryButton")
+        self.scan_all_btn.setToolTip("Read every physical disk of this computer, one after another")
+        self.scan_all_btn.clicked.connect(lambda: self.scan_all_requested.emit(self.server_id or ""))
+        scan_row.addWidget(self.scan_all_btn)
+        scan_row.addStretch()
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setFixedWidth(180)
+        self.progress_bar.setVisible(False)
+        scan_row.addWidget(self.progress_bar)
+        self.progress_lbl = QLabel("")
+        self.progress_lbl.setStyleSheet("font-size: 13px; color: #e3b341;")
+        scan_row.addWidget(self.progress_lbl)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setVisible(False)
+        self.cancel_btn.clicked.connect(self.cancel_requested.emit)
+        scan_row.addWidget(self.cancel_btn)
+        layout.addLayout(scan_row)
         layout.addStretch(1)
 
     def _clear_details(self):
@@ -149,13 +180,13 @@ class ServerPanel(QWidget):
                 item.widget().deleteLater()
 
     def display(self, server_id: str, host_name: str, info: Optional[SystemInfo],
-                vendor_states: Optional[Dict[str, vt.ControllerVendorState]] = None):
+                controllers: Optional[List[ControllerSummary]] = None):
         self.server_id = server_id
         self.info = info
         self.host_lbl.setText(host_name)
         self._clear_details()
         self.table.setRowCount(0)
-        self._clear_vendor()
+        self._fill_raid(controllers or [])
 
         if info is None:
             self.identity_lbl.setText("Not read yet.")
@@ -206,196 +237,37 @@ class ServerPanel(QWidget):
                 self.table.setItem(row, col, item)
         _fit_height(self.table)
 
-        for ctrl in info.controllers:
-            if vt.supported(ctrl):
-                state = (vendor_states or {}).get(ctrl.pci_slot) or vt.ControllerVendorState(pci_slot=ctrl.pci_slot)
-                self._add_vendor_section(ctrl, state)
 
-    # ---- vendor tool sections -----------------------------------------------------------
-    def _clear_vendor(self):
-        self.vendor_sections = {}
-        while self.vendor_container.count():
-            item = self.vendor_container.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+    # ---- RAID controllers / scan all -------------------------------------------------------
+    def _fill_raid(self, controllers: List[ControllerSummary]):
+        self.controllers = list(controllers)
+        has = bool(controllers)
+        self.raid_caption.setVisible(has)
+        self.raid_table.setVisible(has)
+        self.discovery_lbl.setVisible(any(not c.scanned for c in controllers))
+        self.raid_table.setRowCount(len(controllers))
+        for r, c in enumerate(controllers):
+            values = [c.label, f"{c.status.icon}  {STATUS_TEXT[c.status]}", str(c.physical), str(c.virtual)]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if col >= 2:
+                    item.setTextAlignment(Qt.AlignCenter)
+                self.raid_table.setItem(r, col, item)
+        if has:
+            _fit_height(self.raid_table)
 
-    def _add_vendor_section(self, ctrl, state: vt.ControllerVendorState):
-        box = QFrame()
-        box.setProperty("class", "HeaderCard")
-        lay = QVBoxLayout(box)
-        lay.setContentsMargins(16, 14, 16, 14)
-        lay.setSpacing(8)
-        title = QLabel(f"{ctrl.label} · {ctrl.pci_slot}")
-        title.setStyleSheet("font-size: 15px; font-weight: bold; color: #ffffff;")
-        lay.addWidget(title)
+    def _on_raid_row(self, row: int, _col: int):
+        if 0 <= row < len(self.controllers):
+            self.controller_open_requested.emit(self.server_id or "", self.controllers[row].label)
 
-        tool = state.tool
-        usable = bool(tool and tool.usable)
-        row = QHBoxLayout()
-        mode_lbl = QLabel("Read mode:")
-        mode_lbl.setStyleSheet("font-size: 13px; color: #8b949e;")
-        row.addWidget(mode_lbl)
-        std = QRadioButton(STANDARD_TEXT)
-        ven = QRadioButton(f"{VENDOR_TEXT} ({tool.found_text})" if tool and tool.installed else VENDOR_TEXT)
-        group = QButtonGroup(box)
-        group.addButton(std)
-        group.addButton(ven)
-        ven.setEnabled(usable)
-        (ven if usable and state.mode == vt.MODE_VENDOR else std).setChecked(True)
-        row.addWidget(std)
-        row.addWidget(ven)
-        row.addStretch()
-        lay.addLayout(row)
+    def set_busy(self, busy: bool):
+        self.scan_all_btn.setEnabled(not busy)
+        self.progress_bar.setVisible(busy)
+        self.cancel_btn.setVisible(busy)
+        if not busy:
+            self.progress_lbl.setText("")
 
-        info_lbl = QLabel(self._vendor_info_text(state, local=not self.server_id))
-        info_lbl.setWordWrap(True)
-        info_lbl.setTextFormat(Qt.RichText)
-        info_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        info_lbl.setStyleSheet("font-size: 13px; color: #c9d1d9;")
-        lay.addWidget(info_lbl)
-        section = VendorSection(standard_btn=std, vendor_btn=ven, info_lbl=info_lbl)
-
-        slot = ctrl.pci_slot
-        ven.toggled.connect(lambda on, s=slot: self.vendor_mode_changed.emit(
-            self.server_id or "", s, vt.MODE_VENDOR if on else vt.MODE_STANDARD))
-
-        if usable and state.mode == vt.MODE_VENDOR and state.report:
-            self._add_report(lay, state.report, section)
-        self.vendor_sections[slot] = section
-        self.vendor_container.addWidget(box)
-
-    @staticmethod
-    def _vendor_info_text(state: vt.ControllerVendorState, local: bool) -> str:
-        tool = state.tool
-        if tool is None:
-            return ("Vendor tool: not checked yet. Click <b>↻ Refresh</b> to look for perccli / storcli "
-                    "(only read-only commands are run; nothing is installed).")
-        if tool.error and not tool.installed:
-            return escape(tool.error)
-        if not tool.installed:
-            return vt.MISSING_TOOL_HELP
-        if not tool.usable:
-            template = vt.NOT_ROOT_LOCAL_TEXT if local else vt.NOT_ROOT_TEXT
-            return f"<b>{escape(tool.found_text)}</b>. " + escape(template.format(tool=tool.name))
-        if state.mode != vt.MODE_VENDOR:
-            return (f"<b>{escape(tool.found_text)}</b>. Choose <b>{VENDOR_TEXT}</b> to also read the RAID "
-                    f"state, the disks of each volume, the controller's counters and the battery "
-                    f"(read-only), then click <b>↻ Refresh</b>.")
-        if state.error:
-            return f"<b>{escape(tool.found_text)}</b>. <span style='color:#ff7b72'>{escape(state.error)}</span>"
-        if not state.report:
-            return (f"<b>{escape(tool.found_text)}</b>. Click <b>↻ Refresh</b> to read this controller "
-                    f"with {escape(tool.name)} (read-only).")
-        return f"<b>{escape(tool.found_text)}</b>. Read-only data from {escape(tool.name)}:"
-
-    def _add_report(self, lay: QVBoxLayout, report: vt.VendorController, section: VendorSection):
-        color = LEVEL_COLORS[report.level]
-        status = QLabel(f"{report.health.icon}  {escape(report.summary)}")
-        status.setWordWrap(True)
-        status.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {color};")
-        lay.addWidget(status)
-        section.status_lbl = status
-
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(18)
-        for i, (k, v) in enumerate(report.details()):
-            kl = QLabel(k)
-            kl.setStyleSheet("font-size: 13px; color: #8b949e;")
-            vl = QLabel(f"<b>{escape(v)}</b>")
-            vl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            grid.addWidget(kl, i // 2, (i % 2) * 2)
-            grid.addWidget(vl, i // 2, (i % 2) * 2 + 1)
-        lay.addLayout(grid)
-
-        lay.addWidget(self._caption("VIRTUAL DRIVES (VOLUMES)"))
-        vols = self._table(VOLUME_COLUMNS, len(report.volumes))
-        for r, v in enumerate(report.volumes):
-            members = ", ".join(f"{m['EID:Slt']} (DID {m['DID']}, {m['State']})" for m in v.members)
-            values = [v.dg_vd, v.name, v.raid_type, f"{v.state} ({v.state_text})", v.cache, v.size,
-                      v.os_drive or "—", members or "—", v.active_operations or "None",
-                      "; ".join(v.notes + v.reasons) or "—"]
-            self._fill_row(vols, r, values, v.level, 3, link=("os_drive", v.os_drive) if v.os_drive else None)
-        _fit_height(vols)
-        vols.cellDoubleClicked.connect(lambda r, _c, t=vols: self._emit_link(t, r))
-        lay.addWidget(vols)
-        section.volumes_table = vols
-
-        lay.addWidget(self._caption("PHYSICAL DRIVES"))
-        drives = self._table(DRIVE_COLUMNS, len(report.drives))
-        for r, d in enumerate(report.drives):
-            alert = "—" if d.smart_alert is None else ("Yes" if d.smart_alert else "No")
-            values = [d.eid_slot, "—" if d.did is None else str(d.did), d.smartctl_type or "—",
-                      (d.volume.name or d.volume.dg_vd) if d.volume else "—", f"{d.state} ({d.state_text})",
-                      self._num(d.media_errors), self._num(d.other_errors), self._num(d.predictive_failures),
-                      alert, d.temperature or "—", d.link_speed or "—", vt.LEVEL_TEXT[d.level]]
-            self._fill_row(drives, r, values, d.level, 11, tooltip="; ".join(d.reasons),
-                           link=("smartctl", d.smartctl_type) if d.smartctl_type else None)
-        _fit_height(drives)
-        drives.cellDoubleClicked.connect(lambda r, _c, t=drives: self._emit_link(t, r))
-        lay.addWidget(drives)
-        section.drives_table = drives
-
-        b = report.battery
-        if b.present:
-            parts = [f"{b.kind or 'Battery'}: {b.state or 'unknown'}"]
-            if b.charge:
-                parts.append(f"charge {b.charge}")
-            if b.temperature:
-                parts.append(b.temperature)
-            parts.append(f"replacement required: {'Yes' if b.replacement_required else 'No'}")
-            parts.append(f"pack missing: {'Yes' if b.pack_missing else 'No'}")
-            text = " · ".join(parts)
-        else:
-            text = b.note or "No battery reported"
-        battery = QLabel(f"🔋  {escape(text)}")
-        battery.setWordWrap(True)
-        battery.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {LEVEL_COLORS[b.level]};")
-        lay.addWidget(battery)
-        section.battery_lbl = battery
-        if report.errors:
-            err = QLabel("Not read: " + escape("; ".join(report.errors)))
-            err.setWordWrap(True)
-            err.setStyleSheet("font-size: 12px; color: #ff7b72;")
-            lay.addWidget(err)
-
-    @staticmethod
-    def _num(value) -> str:
-        return "—" if value is None else f"{value:,}"
-
-    @staticmethod
-    def _caption(text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setStyleSheet("font-size: 12px; font-weight: bold; color: #8b949e; letter-spacing: 1px;")
-        return lbl
-
-    @staticmethod
-    def _table(columns: List[str], rows: int) -> QTableWidget:
-        t = QTableWidget(rows, len(columns))
-        t.setHorizontalHeaderLabels(columns)
-        t.verticalHeader().setVisible(False)
-        t.setEditTriggers(QTableWidget.NoEditTriggers)
-        t.setSelectionBehavior(QTableWidget.SelectRows)
-        t.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        t.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        return t
-
-    @staticmethod
-    def _fill_row(table: QTableWidget, row: int, values: List[str], level: int, status_col: int,
-                  tooltip: str = "", link=None):
-        for col, value in enumerate(values):
-            item = QTableWidgetItem(value)
-            if col == status_col:
-                item.setForeground(QColor(LEVEL_COLORS[level]))
-                if tooltip:
-                    item.setToolTip(tooltip)
-            if link:
-                item.setData(Qt.UserRole, link)
-                if col == 0:
-                    item.setToolTip("Double-click to open this disk in the sidebar")
-            table.setItem(row, col, item)
-
-    def _emit_link(self, table: QTableWidget, row: int):
-        item = table.item(row, 0)
-        link = item.data(Qt.UserRole) if item else None
-        if link:
-            self.disk_link_requested.emit(self.server_id or "", link[0], link[1])
+    def set_progress(self, text: str, done: int, total: int):
+        self.progress_bar.setRange(0, max(total, 1))
+        self.progress_bar.setValue(done)
+        self.progress_lbl.setText(text)

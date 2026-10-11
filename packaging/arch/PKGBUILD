@@ -1,6 +1,6 @@
 # Maintainer: juniorbarchini-oss <juniorbarchini-oss@users.noreply.github.com>
 pkgname=smartlinux
-pkgver=1.1.0
+pkgver=1.2.0
 pkgrel=1
 pkgdesc="S.M.A.R.T. disk health diagnostics for local and remote (SSH) drives"
 arch=('any')
@@ -12,7 +12,7 @@ optdepends=('putty: SSH to very old devices that only offer ssh-dss host keys'
             'udisks2: unmount/remount volumes for the USB compatibility mode'
             'lsof: show which programs keep a USB volume busy')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('96c59795fa708c5ce408dd9e387da6fc9b6f1e9e0d23d2a365d6d8d629a7e57c')
+sha256sums=('SKIP')  # replaced with the real checksum right after the v1.2.0 tag exists
 
 package() {
   cd "$pkgname-$pkgver"

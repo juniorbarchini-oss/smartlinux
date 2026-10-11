@@ -1,6 +1,6 @@
 pkgbase = smartlinux
 	pkgdesc = S.M.A.R.T. disk health diagnostics for local and remote (SSH) drives
-	pkgver = 1.1.0
+	pkgver = 1.2.0
 	pkgrel = 1
 	url = https://github.com/juniorbarchini-oss/smartlinux
 	arch = any
@@ -14,7 +14,7 @@ pkgbase = smartlinux
 	optdepends = polkit: USB compatibility mode (read SMART through adapters that hide it in UAS mode)
 	optdepends = udisks2: unmount/remount volumes for the USB compatibility mode
 	optdepends = lsof: show which programs keep a USB volume busy
-	source = smartlinux-1.1.0.tar.gz::https://github.com/juniorbarchini-oss/smartlinux/archive/refs/tags/v1.1.0.tar.gz
-	sha256sums = 96c59795fa708c5ce408dd9e387da6fc9b6f1e9e0d23d2a365d6d8d629a7e57c
+	source = smartlinux-1.2.0.tar.gz::https://github.com/juniorbarchini-oss/smartlinux/archive/refs/tags/v1.2.0.tar.gz
+	sha256sums = SKIP
 
 pkgname = smartlinux

@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from typing import List, Tuple, Optional
 from .models import DiskInfo, HealthStatus
-from .smart_parser import SmartParser, SMART_DEVICE_TYPES, reading_quality
+from .smart_parser import SmartParser, SMART_DEVICE_TYPES, reading_quality, reading_rank
 
 
 class LocalDiskDetector:
@@ -165,7 +165,7 @@ class LocalDiskDetector:
         
         last_error = ""
         best_disk = None
-        best_quality = (0, False)
+        best_quality = (False, 0)
 
         for dev_type in device_types:
             try:
@@ -185,8 +185,8 @@ class LocalDiskDetector:
                                 disk.is_usb = True
                             if quality == 2 and disk.health_status != HealthStatus.UNKNOWN and disk.size_bytes > 0:
                                 return disk
-                            if best_disk is None or (quality, disk.size_bytes > 0) > best_quality:
-                                best_disk, best_quality = disk, (quality, disk.size_bytes > 0)
+                            if best_disk is None or reading_rank(quality, disk.size_bytes) > best_quality:
+                                best_disk, best_quality = disk, reading_rank(quality, disk.size_bytes)
                     except json.JSONDecodeError:
                         pass
                 

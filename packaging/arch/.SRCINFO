@@ -15,6 +15,6 @@ pkgbase = smartlinux
 	optdepends = udisks2: unmount/remount volumes for the USB compatibility mode
 	optdepends = lsof: show which programs keep a USB volume busy
 	source = smartlinux-1.3.0-beta.4.tar.gz::https://github.com/juniorbarchini-oss/smartlinux/archive/refs/tags/v1.3.0-beta.4.tar.gz
-	sha256sums = SKIP
+	sha256sums = 9372f4956c3addba4fe64de0dd7821fdd68b98924c4eeabf0f57071b3bcd4fed
 
 pkgname = smartlinux

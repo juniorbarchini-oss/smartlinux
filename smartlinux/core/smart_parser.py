@@ -1,3 +1,4 @@
+import re
 from typing import Dict, Any, List, Optional, Tuple
 from .models import DiskInfo, SmartAttribute, HealthStatus
 
@@ -59,6 +60,40 @@ def reading_rank(quality: int, size_bytes: int) -> tuple:
     by quality first let that empty reply outrank a real SCSI/SAT reading.
     """
     return (size_bytes > 0, quality)
+
+
+# Vendors that pack several counters into one SMART raw value. smartctl prints the whole
+# 48-bit number, which is meaningless as a count (and made the health check flag healthy
+# drives). Each decoder returns (the count that matters for health, text to display).
+def _seagate_errors_over_operations(unit: str):
+    def decode(raw_val: int):
+        errors = (raw_val >> 32) & 0xFFFF
+        operations = raw_val & 0xFFFFFFFF
+        return errors, f"{errors} errors / {operations:,} {unit}"
+    return decode
+
+
+def _seagate_command_timeouts(raw_val: int):
+    count = raw_val & 0xFFFF
+    return count, f"{count}"
+
+
+VENDOR_RAW_DECODERS = {
+    "seagate": {
+        1: _seagate_errors_over_operations("reads"),    # Raw_Read_Error_Rate
+        7: _seagate_errors_over_operations("seeks"),    # Seek_Error_Rate
+        188: _seagate_command_timeouts,                 # Command_Timeout
+    },
+}
+
+
+def detect_raw_vendor(data: Dict[str, Any]) -> Optional[str]:
+    """Which packed-raw convention the drive follows (None = report smartctl's value as is)."""
+    model = str(data.get("model_name", "") or "")
+    family = str(data.get("model_family", "") or "")
+    if "seagate" in family.lower() or "seagate" in model.lower() or re.match(r"^ST\d", model.strip()):
+        return "seagate"
+    return None
 
 
 class SmartParser:
@@ -218,6 +253,7 @@ class SmartParser:
         has_critical_failure = not passed
         has_warning = False
         warning_reasons = []
+        decoders = VENDOR_RAW_DECODERS.get(detect_raw_vendor(data), {})
 
         for item in attr_table:
             attr_id = int(item.get("id", 0))
@@ -229,6 +265,10 @@ class SmartParser:
             raw_val = raw_dict.get("value", 0)
             raw_str = raw_dict.get("string", str(raw_val))
             when_failed = item.get("when_failed", "")
+
+            decode = decoders.get(attr_id)
+            if decode:
+                raw_val, raw_str = decode(int(raw_val))
 
             status_type = HealthStatus.HEALTHY
             status_str = "OK"

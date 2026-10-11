@@ -1,6 +1,7 @@
 import os
 import subprocess
 import time
+import time
 from typing import List, Optional, Set, Dict, Tuple
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
@@ -9,7 +10,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices
 
-from ..core.models import DiskInfo, ServerConfig, HealthStatus
+from ..core.models import DiskInfo, ServerConfig
 from ..core.detector import LocalDiskDetector
 from ..core.ssh_client import create_ssh_client, AutoSSHClient, host_key_fingerprint, trust_host_key, known_hosts_label
 from ..core.config_manager import ConfigManager, AppSettings
@@ -161,6 +162,7 @@ class MainWindow(QMainWindow):
 
         self.sidebar = SidebarWidget()
         self.sidebar.disk_selected.connect(self._on_disk_selected_in_sidebar)
+        self.sidebar.scan_requested.connect(self._on_sidebar_scan_requested)
         self.sidebar.server_add_requested.connect(self._on_add_server)
         self.sidebar.server_remove_requested.connect(self._on_remove_server)
         self.sidebar.server_refresh_requested.connect(self._on_refresh_server)
@@ -345,28 +347,36 @@ class MainWindow(QMainWindow):
         for d in drives:
             key = f"local_{d.device_path}"
             if key in self._all_known_disks:
-                cached = self._all_known_disks[key]
-                if cached.attributes:
-                    d.attributes = cached.attributes
-                    d.health_status = cached.health_status
-                    d.health_summary = cached.health_summary
-                    d.temperature_c = cached.temperature_c
-                    d.power_on_hours = cached.power_on_hours
-                    d.power_cycles = cached.power_cycles
-                    d.raw_json = cached.raw_json
-                    d.uas_candidate = cached.uas_candidate
-                    if cached.compat_read_note:
-                        d.compat_read_note = cached.compat_read_note
-                        d.model, d.serial, d.firmware = cached.model, cached.serial, cached.firmware
+                self._merge_cached_reading(d, self._all_known_disks[key])
             self._all_known_disks[key] = d
             updated_drives.append(d)
 
         self.sidebar.set_local_disks(updated_drives)
         self.status_bar.showMessage(f"{len(drives)} local drive(s) detected. Select a drive and click 'Scan Now'.")
+        # Show the first drive if nothing is selected yet, but never read it: scans are manual.
         if updated_drives and not self.detail_panel.current_disk:
             self.detail_panel.display_disk(updated_drives[0])
-            if not updated_drives[0].attributes and updated_drives[0].health_status == HealthStatus.UNKNOWN:
-                self._scan_single_disk(updated_drives[0])
+
+    @staticmethod
+    def _merge_cached_reading(fresh: DiskInfo, cached: DiskInfo):
+        """Keeps a previous SMART reading when the drive list is re-detected (hotplug,
+        refresh, server reconnect), so re-listing never loses data nor forces a re-scan."""
+        if cached.last_scanned is None and not cached.attributes:
+            return
+        fresh.attributes = cached.attributes
+        fresh.health_status = cached.health_status
+        fresh.health_summary = cached.health_summary
+        fresh.temperature_c = cached.temperature_c
+        fresh.power_on_hours = cached.power_on_hours
+        fresh.power_cycles = cached.power_cycles
+        fresh.raw_json = cached.raw_json
+        fresh.self_test_status = cached.self_test_status
+        fresh.error_message = cached.error_message
+        fresh.uas_candidate = cached.uas_candidate
+        fresh.last_scanned = cached.last_scanned
+        if cached.compat_read_note:
+            fresh.compat_read_note = cached.compat_read_note
+            fresh.model, fresh.serial, fresh.firmware = cached.model, cached.serial, cached.firmware
 
     # ---------------- REMOTE SERVERS DISCOVERY (ON-DEMAND) ----------------
 
@@ -414,8 +424,9 @@ class MainWindow(QMainWindow):
     def _on_remote_drives_discovered(self, server_id: str, drives: List[DiskInfo]):
         for d in drives:
             key = f"{server_id}_{d.device_path}"
-            if key not in self._all_known_disks:
-                self._all_known_disks[key] = d
+            if key in self._all_known_disks:
+                self._merge_cached_reading(d, self._all_known_disks[key])
+            self._all_known_disks[key] = d
         self.sidebar.set_server_drives(server_id, drives)
         self.status_bar.showMessage(f"Server connected: {len(drives)} drive(s) listed.")
 
@@ -473,9 +484,11 @@ class MainWindow(QMainWindow):
     def _on_disk_selected_in_sidebar(self, disk: DiskInfo):
         key = f"{disk.server_id or 'local'}_{disk.device_path}"
         current = self._all_known_disks.get(key, disk)
-        self.detail_panel.display_disk(current)
-        if not current.attributes and current.health_status == HealthStatus.UNKNOWN:
-            self._scan_single_disk(current)
+        self.detail_panel.display_disk(current)  # display only: the user starts scans
+
+    def _on_sidebar_scan_requested(self, disk: DiskInfo):
+        key = f"{disk.server_id or 'local'}_{disk.device_path}"
+        self._scan_single_disk(self._all_known_disks.get(key, disk))
 
     def _scan_single_disk(self, disk: DiskInfo):
         self.detail_panel.set_loading(True, f"Reading SMART telemetry for {disk.name}...")
@@ -513,6 +526,7 @@ class MainWindow(QMainWindow):
             return client.read_remote_drive_smart(disk.device_path)
 
     def _on_single_disk_scanned(self, updated_disk: DiskInfo):
+        updated_disk.last_scanned = time.time()
         key = f"{updated_disk.server_id or 'local'}_{updated_disk.device_path}"
         self._all_known_disks[key] = updated_disk
         HistoryManager.append_snapshot(updated_disk)
@@ -562,7 +576,7 @@ class MainWindow(QMainWindow):
                 self, "Self-Test Started",
                 f"Self-test ({test_type}) queued on {disk.model} ({disk.device_path}).\n\n"
                 f"{msg}\n\n"
-                f"Wait for it to finish, then click 'Scan Now' again on this drive — "
+                f"Wait for it to finish, then click 'Refresh' on this drive — "
                 f"the result will show up as 'Last Self-Test' right under the drive name, at the top of the Diagnostics tab."
             )
         else:
@@ -632,6 +646,8 @@ class MainWindow(QMainWindow):
 
     def _on_compat_done(self, old_key: str, result):
         disk = result.disk
+        if disk.last_scanned is None:
+            disk.last_scanned = time.time()
         self.detail_panel.set_compat_busy(False)
         self._all_known_disks.pop(old_key, None)
         self._all_known_disks[f"local_{disk.device_path}"] = disk

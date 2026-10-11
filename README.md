@@ -16,6 +16,8 @@ Designed with an **on-demand philosophy**, SmartLinux avoids unnecessary drive s
 
 * **⚡ Pure On-Demand Diagnostics:**  
   Zero background spin-ups and zero unnecessary wear on standby HDDs. Storage devices and remote servers are listed immediately in an unscanned state; S.M.A.R.T. telemetry is read only when you click **Scan Now**.
+  Selecting a drive (local or remote) only shows what is already known; once a drive has been read, the button
+  becomes **↻ Refresh** (also in the right-click menu) and the panel shows **Last scanned** with the time of that read.
 * **🔌 Real-Time USB Hotplug Auto-Detection:**  
   Zero-overhead Linux kernel Netlink uevent listener automatically detects plugged or removed USB drives in real time without requiring manual refreshes.
 * **⏏️ Safely Eject USB Storage:**  

@@ -6,12 +6,14 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from ..core.models import DiskInfo, ServerConfig, HealthStatus
+from .scan_state import scan_action_text
 
 
 class SidebarWidget(QWidget):
     """Sidebar listing Local and Remote Disks with color-coded health badges."""
 
-    disk_selected = Signal(object)              # Emits DiskInfo
+    disk_selected = Signal(object)              # Emits DiskInfo (display only, never scans)
+    scan_requested = Signal(object)             # Emits DiskInfo: user asked for a SMART read
     server_add_requested = Signal()             # Request open Add Server dialog
     server_remove_requested = Signal(str)       # Emits server_id
     server_refresh_requested = Signal(str)      # Emits server_id
@@ -221,6 +223,11 @@ class SidebarWidget(QWidget):
             srv_name = srv.name if srv else "Remote Host"
             QMessageBox.warning(self, f"Connection Alert: {srv_name}", error_msg)
 
+    def _disk_for(self, dev_path: str, is_remote: bool, server_id: Optional[str]) -> Optional[DiskInfo]:
+        if not is_remote:
+            return self._local_drives.get(dev_path)
+        return self._remote_drives.get(server_id, {}).get(dev_path)
+
     def _show_context_menu(self, pos):
         item = self.tree.itemAt(pos)
         if not item:
@@ -265,14 +272,16 @@ class SidebarWidget(QWidget):
             is_remote = data.get("is_remote", False)
             is_usb = data.get("is_usb", False)
 
-            act_scan = menu.addAction("🔍 Scan Now")
+            disk = self._disk_for(dev_path, is_remote, data.get("server_id"))
+            act_scan = menu.addAction(scan_action_text(disk)) if disk else None
             
             act_eject = None
             if not is_remote and is_usb:
                 act_eject = menu.addAction("⏏️ Safely Eject Drive")
 
             action = menu.exec(self.tree.viewport().mapToGlobal(pos))
-            if action == act_scan:
-                self._on_item_selection()
+            if act_scan and action == act_scan:
+                self.disk_selected.emit(disk)
+                self.scan_requested.emit(disk)
             elif act_eject and action == act_eject:
                 self.eject_requested.emit(dev_path)

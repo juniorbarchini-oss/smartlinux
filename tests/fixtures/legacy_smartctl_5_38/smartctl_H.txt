@@ -1,0 +1,6 @@
+smartctl version 5.38 [arm-mv5sft-linux-gnueabi] Copyright (C) 2002-8 Bruce Allen
+Home page is http://smartmontools.sourceforge.net/
+
+=== START OF READ SMART DATA SECTION ===
+SMART overall-health self-assessment test result: PASSED
+

@@ -1,0 +1,27 @@
+smartctl version 5.38 [arm-mv5sft-linux-gnueabi] Copyright (C) 2002-8 Bruce Allen
+Home page is http://smartmontools.sourceforge.net/
+
+=== START OF READ SMART DATA SECTION ===
+SMART Self-test log structure revision number 1
+Num  Test_Description    Status                  Remaining  LifeTime(hours)  LBA_of_first_error
+# 1  Short offline       Completed without error       00%     21848         -
+# 2  Short offline       Completed without error       00%     21848         -
+# 3  Short offline       Completed without error       00%     21847         -
+# 4  Short offline       Completed without error       00%     21827         -
+# 5  Short offline       Completed without error       00%     21827         -
+# 6  Short offline       Aborted by host               10%     21826         -
+# 7  Short offline       Completed without error       00%     21826         -
+# 8  Short offline       Aborted by host               50%     21826         -
+# 9  Short offline       Aborted by host               90%     21826         -
+#10  Short offline       Aborted by host               90%     21826         -
+#11  Short offline       Aborted by host               60%     21826         -
+#12  Short offline       Aborted by host               90%     21826         -
+#13  Short offline       Completed without error       00%     21826         -
+#14  Short offline       Completed without error       00%     21617         -
+#15  Short offline       Completed without error       00%     20709         -
+#16  Short offline       Completed without error       00%     19836         -
+#17  Short offline       Completed without error       00%     19836         -
+#18  Short offline       Completed without error       00%     19836         -
+#19  Short offline       Completed without error       00%     11113         -
+#20  Short offline       Completed without error       00%         0         -
+

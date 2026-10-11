@@ -1,49 +1,52 @@
-import json
+import contextlib
+import logging
 import os
 import re
-import sys
-from typing import List, Tuple, Optional, Dict, Any
+from typing import Optional, Tuple, Dict, Any
 import paramiko
-from .models import ServerConfig, DiskInfo, HealthStatus
-from .smart_parser import SmartParser, SMART_DEVICE_TYPES, reading_quality
-
-
-UNIVERSAL_PATH = (
-    "export PATH=/opt/homebrew/bin:/opt/homebrew/sbin:"
-    "/usr/local/sbin:/usr/local/bin:"
-    "/usr/sbin:/usr/bin:/sbin:/bin:"
-    "$PATH; "
+from .models import ServerConfig
+from .remote_common import (  # noqa: F401  (re-exported for backward compatibility)
+    BaseRemoteClient, UNIVERSAL_PATH, extract_json_object, is_permission_denied_json,
+)
+from .plink_client import (
+    PlinkSSHClient, PlinkHostKey, PLINK_INSTALL_HINT, find_plink,
 )
 
 
-def extract_json_object(text: str) -> Optional[Dict[str, Any]]:
-    if not text:
-        return None
-    text = text.strip()
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        try:
-            return json.loads(text[start:end+1])
-        except Exception:
-            pass
-    return None
+# paramiko messages meaning "this device only speaks algorithms we cannot negotiate"
+# (typically ssh-dss host keys, old kex/ciphers/MACs): the cue to retry with plink.
+_LEGACY_NEGOTIATION_RE = re.compile(
+    r"no matching host key type|incompatible ssh (peer|server)|no acceptable (host key|kex|cipher|mac)"
+    r"|unable to (negotiate|agree)|no matching (key exchange|cipher|mac|kex)|negotiation failed",
+    re.I,
+)
 
 
-def is_permission_denied_json(data: Optional[Dict[str, Any]]) -> bool:
-    if not data:
+class _DropRecords(logging.Filter):
+    def filter(self, record):  # noqa: A003
         return False
-    messages = data.get("smartctl", {}).get("messages", [])
-    for msg in messages:
-        str_msg = msg.get("string", "").lower()
-        if any(term in str_msg for term in ["permission denied", "operation not permitted", "must be root", "access denied"]):
-            return True
-    return False
+
+
+@contextlib.contextmanager
+def _quiet_paramiko_transport():
+    """Mute paramiko's transport thread while we connect.
+
+    When a device offers only algorithms paramiko cannot negotiate (e.g. ssh-dss), the
+    transport thread dumps a full traceback to stderr even though connect() reports the
+    failure cleanly and AutoSSHClient retries with plink. The error is still returned
+    to the caller as an exception; only the duplicate log noise is dropped.
+    """
+    log = logging.getLogger("paramiko.transport")
+    flt = _DropRecords()
+    log.addFilter(flt)
+    try:
+        yield
+    finally:
+        log.removeFilter(flt)
+
+
+def is_legacy_negotiation_error(message: str) -> bool:
+    return bool(_LEGACY_NEGOTIATION_RE.search(message or ""))
 
 
 class HostKeyUntrustedException(paramiko.SSHException):
@@ -74,16 +77,16 @@ class StrictKnownHostsPolicy(paramiko.MissingHostKeyPolicy):
         raise HostKeyUntrustedException(hostname, key)
 
 
-class RemoteSSHClient:
+class RemoteSSHClient(BaseRemoteClient):
     """
     Generic, platform-agnostic SSH client for monitoring storage diagnostics
     across any Linux distribution, macOS (Darwin), or BSD host.
     """
 
     def __init__(self, config: ServerConfig):
-        self.config = config
+        super().__init__(config)
         self._client: Optional[paramiko.SSHClient] = None
-        self._remote_os: Optional[str] = None
+        self.legacy_negotiation_failure = False
         self.last_untrusted_host_key: Optional[Tuple[str, paramiko.PKey]] = None
 
     @staticmethod
@@ -129,6 +132,7 @@ class RemoteSSHClient:
     def connect(self, timeout: int = 8) -> Tuple[bool, str]:
         self.disconnect()
         self.last_untrusted_host_key = None
+        self.legacy_negotiation_failure = False
         self._client = paramiko.SSHClient()
 
         # Load system and user known_hosts
@@ -172,7 +176,8 @@ class RemoteSSHClient:
                 connect_kwargs["password"] = self.config.password
                 connect_kwargs["look_for_keys"] = False
 
-            self._client.connect(**connect_kwargs)
+            with _quiet_paramiko_transport():
+                self._client.connect(**connect_kwargs)
             self._detect_os()
             return True, "Connected successfully"
         except paramiko.BadHostKeyException as e:
@@ -201,6 +206,7 @@ class RemoteSSHClient:
             return False, "SSH Authentication Error: Invalid username, password, or key."
         except paramiko.SSHException as e:
             self.disconnect()
+            self.legacy_negotiation_failure = is_legacy_negotiation_error(str(e))
             return False, f"SSH Error: {str(e)}"
         except Exception as e:
             self.disconnect()
@@ -219,13 +225,6 @@ class RemoteSSHClient:
         if self._client and self._client.get_transport():
             return self._client.get_transport().is_active()
         return False
-
-    def _detect_os(self):
-        try:
-            _, out, _ = self._raw_exec("uname -s")
-            self._remote_os = out.strip()
-        except Exception:
-            self._remote_os = "Linux"
 
     def _raw_exec(self, cmd: str, timeout: int = 15) -> Tuple[int, str, str]:
         if not self.is_connected():
@@ -259,217 +258,99 @@ class RemoteSSHClient:
         except Exception as e:
             return -1, "", str(e)
 
-    def exec_smartctl(self, args: str, timeout: int = 15) -> Tuple[int, str, str]:
-        cmd = f"smartctl {args}"
-        
-        if self.config.username != "root" and self.config.password:
-            code, out, err = self._exec_with_sudo(cmd, timeout=timeout)
-            json_data = extract_json_object(out)
-            if json_data and not is_permission_denied_json(json_data):
-                return code, out, err
 
-        code, out, err = self._raw_exec(cmd, timeout=timeout)
-        json_data = extract_json_object(out)
-        if json_data and not is_permission_denied_json(json_data):
-            return code, out, err
+def host_key_fingerprint(key) -> str:
+    """Human-readable fingerprint of a paramiko PKey or a PlinkHostKey."""
+    if isinstance(key, PlinkHostKey):
+        return key.fingerprint
+    return ":".join(f"{b:02x}" for b in key.get_fingerprint())
 
-        if self.config.password or self.config.username != "root":
-            code_s, out_s, err_s = self._exec_with_sudo(cmd, timeout=timeout)
-            return code_s, out_s, err_s
 
-        return code, out, err
+def trust_host_key(host: str, key) -> bool:
+    """Persists a host key the user explicitly confirmed, whichever engine reported it."""
+    if isinstance(key, PlinkHostKey):
+        return PlinkSSHClient.trust_host_key(key)
+    return RemoteSSHClient.trust_and_save_host_key(host, key)
 
-    def run_self_test(self, device_path: str, test_type: str = "short") -> Tuple[bool, str]:
-        """Triggers the drive's own native self-test (smartctl -t short|long) remotely.
 
-        Only queues the test; does not wait for completion. Results show up in a
-        later scan under the SMART self-test log.
+def known_hosts_label(key) -> str:
+    """Where a trusted key of this kind ends up (for confirmation dialogs)."""
+    if isinstance(key, PlinkHostKey):
+        return "SmartLinux's trusted legacy host keys (~/.config/smartlinux/legacy_hostkeys.json)"
+    return "~/.ssh/known_hosts"
 
-        Deliberately does NOT use exec_smartctl(): that helper retries across up
-        to 3 auth paths based on detecting JSON output, which is meaningless for
-        this plain-text, state-changing command and previously caused the same
-        'smartctl -t' to fire 2-3 times per click - the 2nd/3rd call would then
-        collide with the test the 1st call had just started, always reporting a
-        false "test already in progress" even though the test did queue.
-        """
-        mode = "long" if test_type == "long" else "short"
-        cmd = f"smartctl -t {mode} {device_path}"
 
-        use_sudo_first = self.config.username != "root" and bool(self.config.password)
-        if use_sudo_first:
-            code, out, err = self._exec_with_sudo(cmd, timeout=15)
-        else:
-            code, out, err = self._raw_exec(cmd, timeout=15)
-        output = ((out or "") + (err or "")).strip()
+class AutoSSHClient:
+    """Picks the SSH engine per device and exposes the one public interface the UI uses.
 
-        if code == 0 or "has begun" in output.lower():
-            return True, output
+    - ``config.legacy_ssh`` set: plink straight away ("Legacy SSH (old devices)").
+    - otherwise paramiko first; if the device cannot be negotiated (no matching host key
+      type, incompatible peer, algorithm mismatch) the connection is retried with plink.
+    The engine that worked is remembered for later reconnects of this client.
+    """
 
-        permission_issue = any(
-            term in output.lower() for term in ("permission denied", "operation not permitted", "must be root")
+    def __init__(self, config: ServerConfig):
+        self.config = config
+        self._engine: Optional[BaseRemoteClient] = None
+        self._use_plink = bool(config.legacy_ssh)
+
+    @property
+    def engine_name(self) -> str:
+        return "plink" if isinstance(self._engine, PlinkSSHClient) else "paramiko"
+
+    @property
+    def last_untrusted_host_key(self):
+        return getattr(self._engine, "last_untrusted_host_key", None)
+
+    @staticmethod
+    def _legacy_unavailable_message(reason: str) -> str:
+        return (
+            f"{reason}\n\nThis device only supports legacy SSH algorithms that the built-in SSH "
+            f"library cannot negotiate, and PuTTY's plink is not installed.\n\n{PLINK_INSTALL_HINT}"
         )
-        if permission_issue and not use_sudo_first and self.config.password:
-            code, out, err = self._exec_with_sudo(cmd, timeout=15)
-            output = ((out or "") + (err or "")).strip()
-            if code == 0 or "has begun" in output.lower():
-                return True, output
 
-        return False, output or f"smartctl exited with code {code}"
+    def connect(self, timeout: int = 8) -> Tuple[bool, str]:
+        if self._engine:
+            self._engine.disconnect()
 
-    def discover_remote_drives(self) -> List[DiskInfo]:
-        drives: List[DiskInfo] = []
-        is_darwin = (self._remote_os == "Darwin")
+        if not self._use_plink:
+            self._engine = RemoteSSHClient(self.config)
+            ok, msg = self._engine.connect(timeout=timeout)
+            if ok:
+                return True, msg
+            if not (self._engine.legacy_negotiation_failure or is_legacy_negotiation_error(msg)):
+                return False, msg
+            if not find_plink():
+                return False, self._legacy_unavailable_message(msg)
+            self._use_plink = True
 
-        code, out, err = self.exec_smartctl("--scan -j")
-        json_scan = extract_json_object(out)
-        if json_scan and "devices" in json_scan:
-            for dev in json_scan.get("devices", []):
-                dev_name = dev.get("name", "")
-                if not dev_name:
-                    continue
-                if is_darwin and any(x in dev_name for x in ["diskimage", "synthesized"]):
-                    continue
-                if any(x in dev_name for x in ["/loop", "/ram", "/zram", "/dm-", "/sr"]):
-                    continue
+        self._engine = PlinkSSHClient(self.config)
+        return self._engine.connect(timeout=timeout)
 
-                protocol = dev.get("protocol", "SATA").upper()
-                is_usb = ("USB" in protocol or "usb" in dev_name)
+    def disconnect(self):
+        if self._engine:
+            self._engine.disconnect()
 
-                disk = DiskInfo(
-                    device_path=dev_name,
-                    name=dev_name.split("/")[-1],
-                    model="Physical Drive",
-                    protocol=protocol,
-                    is_remote=True,
-                    is_usb=is_usb,
-                    server_id=self.config.id,
-                    server_name=self.config.name
-                )
-                drives.append(disk)
+    def is_connected(self) -> bool:
+        return bool(self._engine and self._engine.is_connected())
 
-        if not drives and not is_darwin:
-            code, out, err = self._raw_exec("lsblk -J -d -o NAME,PATH,MODEL,SIZE,TRAN,TYPE,ROTA 2>/dev/null")
-            json_lsblk = extract_json_object(out)
-            if json_lsblk and "blockdevices" in json_lsblk:
-                for dev in json_lsblk.get("blockdevices", []):
-                    dev_name = dev.get("name", "")
-                    dev_path = dev.get("path", f"/dev/{dev_name}")
-                    dev_type = dev.get("type", "").lower()
-                    
-                    if dev_type != "disk":
-                        continue
-                    if any(dev_name.startswith(p) for p in ["loop", "ram", "zram", "dm-", "sr", "cdrom"]):
-                        continue
+    def _ensure_engine(self) -> BaseRemoteClient:
+        if self._engine is None:
+            self._engine = PlinkSSHClient(self.config) if self._use_plink else RemoteSSHClient(self.config)
+        return self._engine
 
-                    model = dev.get("model") or "Physical Drive"
-                    size_str = dev.get("size") or "Unknown"
-                    tran = (dev.get("tran") or "SATA").upper()
+    def exec_smartctl(self, args: str, timeout: int = 15):
+        return self._ensure_engine().exec_smartctl(args, timeout=timeout)
 
-                    disk = DiskInfo(
-                        device_path=dev_path,
-                        name=dev_name,
-                        model=model.strip(),
-                        size_human=size_str,
-                        protocol=tran if tran else "ATA/SATA",
-                        is_remote=True,
-                        is_usb=(tran == "USB"),
-                        server_id=self.config.id,
-                        server_name=self.config.name
-                    )
-                    drives.append(disk)
+    def run_self_test(self, device_path: str, test_type: str = "short"):
+        return self._ensure_engine().run_self_test(device_path, test_type)
 
-        if not drives and is_darwin:
-            code, out, err = self._raw_exec("diskutil list physical | grep -E '^/dev/disk'")
-            if out.strip():
-                for line in out.strip().splitlines():
-                    match = re.search(r'(/dev/disk\d+)', line)
-                    if match:
-                        dev_path = match.group(1)
-                        disk = DiskInfo(
-                            device_path=dev_path,
-                            name=dev_path.split("/")[-1],
-                            model="Mac Physical Drive",
-                            is_remote=True,
-                            server_id=self.config.id,
-                            server_name=self.config.name
-                        )
-                        drives.append(disk)
+    def discover_remote_drives(self):
+        return self._ensure_engine().discover_remote_drives()
 
-        if not drives and not is_darwin:
-            code, out, err = self._raw_exec("ls -d /sys/block/sd* /sys/block/nvme* 2>/dev/null")
-            if out.strip():
-                for line in out.strip().splitlines():
-                    name = line.strip().split("/")[-1]
-                    if not name or "loop" in name or "ram" in name:
-                        continue
-                    disk = DiskInfo(
-                        device_path=f"/dev/{name}",
-                        name=name,
-                        model="Physical Drive",
-                        is_remote=True,
-                        server_id=self.config.id,
-                        server_name=self.config.name
-                    )
-                    drives.append(disk)
+    def read_remote_drive_smart(self, device_path: str):
+        return self._ensure_engine().read_remote_drive_smart(device_path)
 
-        return drives
 
-    def read_remote_drive_smart(self, device_path: str) -> DiskInfo:
-        device_types = SMART_DEVICE_TYPES
-        best_disk = None
-        best_quality = (0, False)
-        last_error = ""
-        last_json = None
-        last_code = 0
-
-        for dev_type in device_types:
-            opt = f"-d {dev_type} " if dev_type else ""
-            code, out, err = self.exec_smartctl(f"-j {opt}-a {device_path}")
-            last_code = code
-            json_data = extract_json_object(out)
-            if json_data:
-                last_json = json_data
-                if not is_permission_denied_json(json_data):
-                    quality = reading_quality(json_data)
-                    if quality:
-                        try:
-                            disk = SmartParser.parse_smart_json(json_data, device_path)
-                            disk.is_remote = True
-                            disk.server_id = self.config.id
-                            disk.server_name = self.config.name
-                            if quality == 2 and disk.health_status != HealthStatus.UNKNOWN and disk.size_bytes > 0:
-                                return disk
-                            if best_disk is None or (quality, disk.size_bytes > 0) > best_quality:
-                                best_disk, best_quality = disk, (quality, disk.size_bytes > 0)
-                        except Exception as e:
-                            print(f"Error parsing SMART JSON: {e}")
-            if err:
-                last_error = err.strip()
-
-        if best_disk and (best_disk.size_bytes > 0 or best_disk.model != "Generic Drive"):
-            return best_disk
-
-        error_detail = last_error
-        if last_json and is_permission_denied_json(last_json):
-            error_detail = "Permission denied: administrator / sudo privileges required."
-        elif "not found" in error_detail.lower():
-            if self._remote_os == "Darwin":
-                error_detail = "smartctl not found. Install on macOS with: brew install smartmontools"
-            else:
-                error_detail = "smartctl not found. Install 'smartmontools' on the remote host."
-        elif "permission denied" in error_detail.lower() or "operation not permitted" in error_detail.lower():
-            error_detail = "Permission denied accessing block device. Check sudo or SUID permissions."
-        elif not error_detail:
-            error_detail = f"No valid SMART response from device (exit code {last_code})"
-
-        disk = DiskInfo(
-            device_path=device_path,
-            name=device_path.split("/")[-1],
-            is_remote=True,
-            server_id=self.config.id,
-            server_name=self.config.name,
-            health_status=HealthStatus.FAILED,
-            health_summary="SMART read failure",
-            error_message=error_detail
-        )
-        return disk
+def create_ssh_client(config: ServerConfig) -> AutoSSHClient:
+    return AutoSSHClient(config)

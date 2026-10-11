@@ -1,0 +1,4 @@
+WDC WD30EFRX-68E
+ATA     
+Linux NAS-FLYCAM 3.2.40 #1 Fri Nov 16 11:50:03 CST 2018 armv5tel GNU/Linux
+BusyBox v1.20.2 (2014-10-30 15:13:17 CST) multi-call binary.

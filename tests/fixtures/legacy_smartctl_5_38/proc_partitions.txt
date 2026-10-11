@@ -1,0 +1,16 @@
+major minor  #blocks  name
+
+   7        0     106364 loop0
+  31        0       1024 mtdblock0
+  31        1       5120 mtdblock1
+  31        2       5120 mtdblock2
+  31        3     209920 mtdblock3
+  31        4      15360 mtdblock4
+  31        5      20480 mtdblock5
+  31        6       5120 mtdblock6
+   8        0 2930266584 sda
+   8        1    2097152 sda1
+   8        2 2926070784 sda2
+   8        3    1049031 sda3
+   8        4    1048576 sda4
+   9        0    2097088 md0

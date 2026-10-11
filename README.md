@@ -22,6 +22,8 @@ Designed with an **on-demand philosophy**, SmartLinux avoids unnecessary drive s
   Safely unmounts and powers off external USB storage devices directly from the UI or right-click context menu.
 * **🌐 Remote Homelab Monitoring via SSH:**  
   Connect seamlessly to remote servers (e.g., ZimaOS, Proxmox, TrueNAS, Raspberry Pi, Ubuntu Server, Debian, macOS) using Password or Private Key authentication with automatic `sudo` elevation.
+* **🕰️ Legacy Device Support:**  
+  Reads very old remote equipment (e.g. WD My Cloud NAS with `smartctl 5.38`, BusyBox, `ssh-dss`-only SSH). See [Legacy devices](#-legacy-devices).
 * **📄 Multi-Format Diagnostic Reports:**  
   Export comprehensive diagnostic reports with multi-drive selection and custom directory browsing:
   * **📝 Markdown (`.md`):** Clean GitHub-Flavored Markdown tables.
@@ -137,6 +139,51 @@ The compiled standalone binary will be generated in `dist/SmartLinux/`.
 
 ---
 
+## 🕰️ Legacy devices
+
+SmartLinux also works with old NAS boxes and embedded devices (tested on a **WD My Cloud EX4**:
+Linux 3.2, BusyBox 1.20, OpenSSH 7.5, `smartctl 5.38`). Two independent problems are handled:
+
+### 1. Old SSH servers (`ssh-dss` host keys)
+
+paramiko ≥ 4 and OpenSSH ≥ 9.8 cannot negotiate `ssh-dss`. SmartLinux therefore has a second SSH
+engine based on PuTTY's **`plink`**, with the same behaviour for the rest of the app:
+
+* **Automatic:** SmartLinux tries paramiko first; if the server fails with *"no matching host key type"*,
+  *"Incompatible ssh peer"* or another algorithm-negotiation error, it retries with `plink`.
+* **Manual:** tick **Legacy SSH (old devices)** in the server dialog to use `plink` straight away.
+* **Install `plink` (optional, only for these devices; PuTTY 0.75+):**
+
+  | System | Command |
+  |---|---|
+  | Debian / Ubuntu | `sudo apt install putty-tools` |
+  | Arch / Manjaro | `sudo pacman -S putty` |
+  | Fedora | `sudo dnf install putty` |
+  | macOS | `brew install putty` |
+
+* **Security is not relaxed:**
+  * The password is handed to `plink` through `-pwfile` (a `0600` temp file that lives only as long as each
+    `plink` process, preferably in `$XDG_RUNTIME_DIR`), never with `-pw` on the command line. `-batch` is always used.
+  * Host keys are never trusted blindly. `plink` checks `~/.putty/sshhostkeys`; for an unknown key SmartLinux
+    shows the fingerprint and asks for confirmation. A confirmed fingerprint is pinned in
+    `~/.config/smartlinux/legacy_hostkeys.json` (`0600`) and enforced with `-hostkey`. A key that differs from the
+    cached/pinned one aborts the connection with a MITM alert.
+
+### 2. Old `smartctl` (no `-j`, no `--scan`)
+
+* If `smartctl -j` answers `UNRECOGNIZED OPTION`, SmartLinux switches to **text mode** for that host and parses
+  `smartctl -a` output (`smartlinux/core/smart_text_parser.py`): model, serial, firmware, capacity, health,
+  hours, temperature, power cycles, the full ATA attribute table and the self-test log. It tolerates smartctl 5.x–7.x
+  layouts, plus basic NVMe and SCSI/SAS reports.
+* Drives are discovered without `--scan` or `lsblk`, from `/proc/partitions` and `/sys/block/*/device/model`.
+* All `-d` device types (`sat`, `usbjmicron`, …) are tried in text mode too; `smartctl -t` reuses the one that worked.
+* `smartctl` is also searched in `/usr/local/modules/bin` (WD firmware).
+* Remote commands are BusyBox-`ash` compatible (no `$((..))`, no `which`, no `lsblk`).
+
+Tests run offline against real captures in `tests/fixtures/legacy_smartctl_5_38/`.
+
+---
+
 ## 📂 Project Architecture
 
 ```text
@@ -149,7 +196,10 @@ smartlinux/
 │   │   ├── detector.py         # Local disk discovery and safe ejection
 │   │   ├── history_manager.py  # On-demand JSON Lines health snapshot log (~/.local/share/)
 │   │   ├── smart_parser.py     # ATA/SATA and NVMe SMART JSON parser & threshold evaluator
-│   │   ├── ssh_client.py       # Hardened SSH client with strict known_hosts verification
+│   │   ├── ssh_client.py       # Hardened paramiko client + automatic engine selection (AutoSSHClient)
+│   │   ├── plink_client.py     # Legacy SSH engine on PuTTY plink (ssh-dss devices)
+│   │   ├── remote_common.py    # Transport-independent smartctl / discovery logic (JSON + text mode)
+│   │   ├── smart_text_parser.py # Plain-text smartctl parser for old smartctl 5.x
 │   │   ├── watcher.py          # Netlink kernel uevent hotplug watcher
 │   │   ├── exporter.py         # Multi-format report exporter (.md, .pdf, .doc, .xls)
 │   │   └── config_manager.py   # Secure server persistence with system keyring integration
@@ -169,7 +219,10 @@ smartlinux/
 │   └── main.py                 # Application entry point
 ├── tests/
 │   ├── test_security.py        # Automated tests for known_hosts, keyring, and permissions
-│   └── test_ansible_smart_check.py # Automated tests for ATA/NVMe thresholds and ntfy alerts
+│   ├── test_ansible_smart_check.py # Automated tests for ATA/NVMe thresholds and ntfy alerts
+│   ├── test_smart_text_parser.py   # Text parser tests (real smartctl 5.38 captures in fixtures/)
+│   ├── test_legacy_remote.py       # Simulated WD My Cloud EX4: discovery, text mode, self-test
+│   └── test_legacy_ssh_engine.py   # plink engine and paramiko→plink automatic selection
 ├── smartlinux.sh               # One-click launcher script
 ├── install.sh                  # System desktop & icon installer
 ├── build_portable.sh           # Standalone binary compiler (PyInstaller)

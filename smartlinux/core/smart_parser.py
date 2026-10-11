@@ -1,6 +1,6 @@
 import re
 from typing import Dict, Any, List, Optional, Tuple
-from .models import DiskInfo, SmartAttribute, HealthStatus
+from .models import DiskInfo, SmartAttribute, HealthStatus, PASSTHROUGH_TYPE_RE
 
 
 def format_bytes_commercial(size_bytes: int) -> str:
@@ -156,6 +156,21 @@ class SmartParser:
         else:
             disk.protocol = dev_protocol or "ATA/SATA"
 
+        # SAS/SCSI identity (vendor, transport, form factor)
+        transport = str(data.get("scsi_transport_protocol", {}).get("name", "") or "").strip()
+        if transport:
+            disk.transport = transport
+            if transport.upper().startswith("SAS") and disk.protocol == "SCSI/SAS":
+                disk.protocol = "SAS"
+        vendor = str(data.get("scsi_vendor", "") or "").strip()
+        if vendor:
+            disk.vendor = vendor
+        form_factor = data.get("form_factor", {})
+        if isinstance(form_factor, dict) and form_factor.get("name"):
+            disk.form_factor = str(form_factor["name"])
+        if PASSTHROUGH_TYPE_RE.match(dev_type):
+            disk.smart_dev_type = data.get("device", {}).get("type")
+
         rot_rate = data.get("rotation_rate", 0)
         if rot_rate == 0 or "NVME" in disk.protocol:
             disk.rotation_rate = "SSD (Solid State)"
@@ -174,6 +189,8 @@ class SmartParser:
             cls._parse_nvme_health(data, disk)
         elif "ata_smart_attributes" in data:
             cls._parse_ata_attributes(data, disk)
+        elif "scsi_error_counter_log" in data or "scsi_grown_defect_list" in data:
+            cls._parse_scsi_health(data, disk)
         else:
             cls._parse_generic_health(data, disk)
 
@@ -193,6 +210,8 @@ class SmartParser:
         
         if "power_cycle_count" in data:
             disk.power_cycles = int(data["power_cycle_count"])
+        elif "accumulated_start_stop_cycles" in data.get("scsi_start_stop_cycle_counter", {}):
+            disk.power_cycles = int(data["scsi_start_stop_cycle_counter"]["accumulated_start_stop_cycles"])
 
     @classmethod
     def _format_hours_ago(cls, current_hours: Optional[int], entry_hours: Optional[int]) -> str:
@@ -225,6 +244,14 @@ class SmartParser:
                 status_str = entry.get("self_test_result", {}).get("string", "Unknown")
                 ago = cls._format_hours_ago(disk.power_on_hours, entry.get("power_on_hours"))
                 disk.self_test_status = f"{type_str}: {status_str}{ago}"
+            return
+
+        scsi_last = data.get("scsi_self_test_0")
+        if isinstance(scsi_last, dict):
+            type_str = scsi_last.get("code", {}).get("string", "Self-Test")
+            status_str = scsi_last.get("result", {}).get("string", "Unknown")
+            ago = cls._format_hours_ago(disk.power_on_hours, scsi_last.get("power_on_time", {}).get("hours"))
+            disk.self_test_status = f"{type_str}: {status_str}{ago}"
             return
 
         # ATA: 'ata_smart_data.self_test.status.string' is a permanent summary field,
@@ -444,6 +471,138 @@ class SmartParser:
         else:
             disk.health_status = HealthStatus.HEALTHY
             disk.health_summary = "Healthy (NVMe Health Passed)"
+
+    @staticmethod
+    def _int(value) -> Optional[int]:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _parse_scsi_health(cls, data: Dict[str, Any], disk: DiskInfo):
+        """SAS/SCSI disks (e.g. behind a MegaRAID/PERC controller): no ATA attribute table,
+        but a health status, a grown defect list and an error counter log.
+
+        Health rules: SMART Health Status not OK -> FAILED; grown defects or uncorrected
+        errors -> WARNING; corrected errors and non-medium errors alone are normal on SAS
+        (ECC at work / bus noise) and never raise a warning."""
+        attrs: List[SmartAttribute] = []
+        warnings: List[str] = []
+        ok, warn, fail = HealthStatus.HEALTHY, HealthStatus.WARNING, HealthStatus.FAILED
+
+        def row(name, value, status_type=ok, status="OK", threshold="-", description=""):
+            attrs.append(SmartAttribute(
+                id=len(attrs) + 1, name=name, current=str(value), worst="-",
+                threshold=str(threshold), raw=str(value), status=status,
+                status_type=status_type, description=description,
+            ))
+
+        smart_status = data.get("smart_status", {})
+        passed = smart_status.get("passed")
+        ie_string = str(smart_status.get("scsi", {}).get("ie_string", "") or "").strip()
+        if passed is not None:
+            row("SMART Health Status", "OK" if passed else (ie_string or "FAILED"),
+                ok if passed else fail, "OK" if passed else "FAIL",
+                description="The drive's own overall health assessment (informational exceptions)")
+
+        temp = data.get("temperature", {})
+        if disk.temperature_c is not None:
+            trip = temp.get("drive_trip")
+            hot = trip is not None and disk.temperature_c >= int(trip)
+            row("Current Temperature", f"{disk.temperature_c} °C", warn if hot else ok,
+                "WARNING" if hot else "OK", f"{trip} °C" if trip is not None else "-",
+                "Drive temperature; threshold is the drive's trip point")
+            if hot:
+                warnings.append(f"temperature {disk.temperature_c} °C")
+
+        power = data.get("power_on_time", {})
+        if "hours" in power:
+            minutes = power.get("minutes")
+            value = f"{int(power['hours']):,} h" + (f" {int(minutes)} min" if minutes is not None else "")
+            row("Power-On Time", value, description="Accumulated power-on time")
+
+        cycles = data.get("scsi_start_stop_cycle_counter", {})
+        if "accumulated_start_stop_cycles" in cycles:
+            spec = cycles.get("specified_cycle_count_over_device_lifetime")
+            row("Start/Stop Cycles", f"{int(cycles['accumulated_start_stop_cycles']):,}",
+                threshold=f"{int(spec):,}" if spec else "-",
+                description="Accumulated start/stop cycles (threshold: specified over device lifetime)")
+        if "accumulated_load_unload_cycles" in cycles:
+            spec = cycles.get("specified_load_unload_count_over_device_lifetime")
+            row("Load/Unload Cycles", f"{int(cycles['accumulated_load_unload_cycles']):,}",
+                threshold=f"{int(spec):,}" if spec else "-",
+                description="Accumulated head load/unload cycles (threshold: specified over device lifetime)")
+        if cycles.get("year_of_manufacture"):
+            week = cycles.get("week_of_manufacture")
+            row("Manufactured", f"{cycles['year_of_manufacture']}" + (f", week {week}" if week else ""),
+                description="Date of manufacture reported by the drive")
+
+        grown = cls._int(data.get("scsi_grown_defect_list"))
+        if grown is not None:
+            row("Grown Defect List", grown, warn if grown > 0 else ok,
+                "WARNING" if grown > 0 else "OK", "0",
+                "Sectors the drive has remapped since leaving the factory (SAS equivalent "
+                "of reallocated sectors). Any growth deserves attention.")
+            if grown > 0:
+                warnings.append(f"{grown} grown defect{'s' if grown != 1 else ''}")
+
+        counters = data.get("scsi_error_counter_log", {})
+        for op in ("read", "write", "verify"):
+            entry = counters.get(op)
+            if not isinstance(entry, dict):
+                continue
+            label = op.capitalize()
+            processed = entry.get("gigabytes_processed")
+            done = f" ({processed} GB processed)" if processed not in (None, "") else ""
+            corrected = cls._int(entry.get("total_errors_corrected"))
+            if corrected is not None:
+                row(f"{label} Errors Corrected", f"{corrected:,}",
+                    description=f"Errors fixed by the drive's ECC / retries; normal on SAS drives{done}")
+            uncorrected = cls._int(entry.get("total_uncorrected_errors"))
+            if uncorrected is not None:
+                row(f"{label} Errors Uncorrected", f"{uncorrected:,}",
+                    warn if uncorrected > 0 else ok, "WARNING" if uncorrected > 0 else "OK", "0",
+                    f"{label} errors the drive could not recover{done}")
+                if uncorrected > 0:
+                    warnings.append(f"{uncorrected:,} uncorrected {op} error{'s' if uncorrected != 1 else ''}")
+
+        nonmedium = data.get("scsi_nonmedium_error", {})
+        nm_count = cls._int(nonmedium.get("count")) if isinstance(nonmedium, dict) else cls._int(nonmedium)
+        if nm_count is None:
+            nm_count = cls._int(data.get("scsi_non_medium_error_count"))
+        if nm_count is not None:
+            row("Non-Medium Error Count", f"{nm_count:,}",
+                description="Errors not related to the media (bus/transport, resets). "
+                            "Informational on SAS: not a drive problem by itself.")
+
+        last_test = data.get("scsi_self_test_0")
+        if isinstance(last_test, dict):
+            result = last_test.get("result", {})
+            code = cls._int(result.get("value"))
+            text = str(result.get("string", "Unknown"))
+            # SCSI self-test results 3..7 = the test failed (a segment, read, ...)
+            failed = code is not None and 3 <= code <= 7
+            row("Last Self-Test", f"{last_test.get('code', {}).get('string', 'Self-test')}: {text}",
+                warn if failed else ok, "WARNING" if failed else "OK",
+                description="Most recent entry of the drive's self-test log")
+            if failed:
+                warnings.append("last self-test failed")
+
+        disk.attributes = attrs
+
+        if passed is False:
+            disk.health_status = HealthStatus.FAILED
+            disk.health_summary = f"SMART Health Status: {ie_string or 'FAILED'}"
+        elif warnings:
+            disk.health_status = HealthStatus.WARNING
+            disk.health_summary = f"Warning: {', '.join(warnings[:3])}"
+        elif passed is True:
+            disk.health_status = HealthStatus.HEALTHY
+            disk.health_summary = "Healthy (SMART Health Status OK, no grown defects)"
+        else:
+            disk.health_status = HealthStatus.UNKNOWN
+            disk.health_summary = "Status undetermined"
 
     @classmethod
     def _parse_generic_health(cls, data: Dict[str, Any], disk: DiskInfo):

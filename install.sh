@@ -31,6 +31,17 @@ if [ ! -d "$OPT_DIR/.venv" ]; then
     "$OPT_DIR/.venv/bin/pip" install -r "$OPT_DIR/requirements.txt" --quiet
 fi
 
+# 2b. Optional: PuTTY's plink, needed only for very old devices (ssh-dss host keys only,
+#     e.g. WD My Cloud NAS). SmartLinux works without it for everything else.
+if ! command -v plink >/dev/null 2>&1; then
+    echo "ℹ️  Optional: 'plink' (PuTTY) not found. It is only needed for legacy SSH devices."
+    echo "   Install it with one of:"
+    echo "     Debian/Ubuntu:  sudo apt install putty-tools"
+    echo "     Arch/Manjaro:   sudo pacman -S putty"
+    echo "     Fedora:         sudo dnf install putty"
+    echo "     macOS:          brew install putty"
+fi
+
 # 3. Deploy binary wrapper
 cat << 'EOF' > "$BIN_FILE"
 #!/usr/bin/env bash

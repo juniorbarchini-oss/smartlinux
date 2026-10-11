@@ -37,7 +37,7 @@ def test_sidebar_groups_physical_under_controller_and_virtual_apart(app):
     sb = SidebarWidget()
     sb.set_local_disks(r630_local_disks())
     top = labels(sb.local_root)
-    assert top == ["🎛️  PERC H730 Mini (MegaRAID) — 5 physical, 4 virtual",
+    assert top == ["⚪  PERC H730 Mini (MegaRAID) — 5 physical, 4 virtual",
                    "🧩  Virtual drives (RAID volumes) — 4"]
     controller, virtual = sb.local_root.child(0), sb.local_root.child(1)
     assert [t.split("•")[0].strip() for t in labels(controller)] == \
@@ -63,7 +63,7 @@ def test_sidebar_remote_server_is_grouped_too(app):
     sb.set_servers([ServerConfig(id="r630", name="pve-r630", host="10.0.0.5")])
     sb.set_server_drives("r630", FakeR630().discover_remote_drives())
     srv = sb.remote_root.child(0)
-    assert labels(srv)[0] == "🎛️  PERC H730 Mini (MegaRAID) — 5 physical, 4 virtual"
+    assert labels(srv)[0] == "⚪  PERC H730 Mini (MegaRAID) — 5 physical, 4 virtual"
     seen = []
     sb.host_selected.connect(seen.append)
     sb.tree.setCurrentItem(srv)

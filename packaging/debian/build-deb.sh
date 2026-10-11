@@ -25,11 +25,19 @@ PKG="$STAGE/pkg"
 LIB="$PKG/usr/lib/smartlinux"
 
 mkdir -p "$LIB" "$PKG/usr/bin" "$PKG/usr/share/applications" "$PKG/DEBIAN" \
-         "$PKG/usr/share/doc/smartlinux" "$PKG/usr/share/icons/hicolor/scalable/apps"
+         "$PKG/usr/share/doc/smartlinux" "$PKG/usr/share/icons/hicolor/scalable/apps" \
+         "$PKG/usr/share/polkit-1/actions"
 
 # Application code, exactly as committed (no stray files from the working tree)
 git -C "$ROOT" archive HEAD smartlinux | tar -x -C "$LIB"
 find "$LIB" -name '__pycache__' -type d -prune -exec rm -rf {} +
+
+# Root helper for the USB compatibility mode (run only through pkexec) + its polkit action
+git -C "$ROOT" show HEAD:packaging/common/usb-mode-helper > "$LIB/usb-mode-helper"
+chmod 755 "$LIB/usb-mode-helper"
+git -C "$ROOT" show HEAD:packaging/common/org.smartlinux.usbmode.policy \
+    > "$PKG/usr/share/polkit-1/actions/org.smartlinux.usbmode.policy"
+chmod 644 "$PKG/usr/share/polkit-1/actions/org.smartlinux.usbmode.policy"
 
 cat > "$PKG/usr/bin/smartlinux" <<'LAUNCHER'
 #!/bin/sh
@@ -77,6 +85,7 @@ Priority: optional
 Architecture: all
 Installed-Size: $INSTALLED_KB
 Depends: python3 (>= 3.10), python3-pyside6.qtcore, python3-pyside6.qtgui, python3-pyside6.qtwidgets, python3-paramiko, python3-keyring, smartmontools
+Recommends: pkexec | policykit-1, udisks2, lsof
 Suggests: putty-tools
 Maintainer: juniorbarchini-oss <juniorbarchini-oss@users.noreply.github.com>
 Homepage: https://github.com/juniorbarchini-oss/smartlinux
@@ -84,7 +93,8 @@ Description: S.M.A.R.T. disk health diagnostics for local and remote drives
  SmartLinux reads S.M.A.R.T. telemetry from local (SATA, NVMe, USB) and remote
  (SSH) drives on demand, keeps a per-disk history keyed by serial number and
  exports reports. Install putty-tools to reach very old devices that only offer
- ssh-dss host keys.
+ ssh-dss host keys. USB adapters that hide S.M.A.R.T. in UAS mode can be read in
+ an opt-in compatibility mode (needs pkexec and udisks2).
 CONTROL
 
 # Python writes __pycache__ here at runtime; dpkg does not know those files, so clean

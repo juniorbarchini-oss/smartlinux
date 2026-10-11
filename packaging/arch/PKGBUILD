@@ -7,7 +7,10 @@ arch=('any')
 url="https://github.com/juniorbarchini-oss/smartlinux"
 license=('MIT')
 depends=('python' 'pyside6' 'python-paramiko' 'python-keyring' 'smartmontools')
-optdepends=('putty: SSH to very old devices that only offer ssh-dss host keys')
+optdepends=('putty: SSH to very old devices that only offer ssh-dss host keys'
+            'polkit: USB compatibility mode (read SMART through adapters that hide it in UAS mode)'
+            'udisks2: unmount/remount volumes for the USB compatibility mode'
+            'lsof: show which programs keep a USB volume busy')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('96c59795fa708c5ce408dd9e387da6fc9b6f1e9e0d23d2a365d6d8d629a7e57c')
 
@@ -18,6 +21,11 @@ package() {
   install -d "$pkgdir/usr/lib/$pkgname"
   cp -r smartlinux "$pkgdir/usr/lib/$pkgname/"
   find "$pkgdir/usr/lib/$pkgname" -name '__pycache__' -type d -prune -exec rm -rf {} +
+
+  # Root helper for the USB compatibility mode (run only through pkexec) + its polkit action
+  install -Dm755 packaging/common/usb-mode-helper "$pkgdir/usr/lib/$pkgname/usb-mode-helper"
+  install -Dm644 packaging/common/org.smartlinux.usbmode.policy \
+    "$pkgdir/usr/share/polkit-1/actions/org.smartlinux.usbmode.policy"
 
   # Launcher
   install -d "$pkgdir/usr/bin"

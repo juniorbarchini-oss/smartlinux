@@ -1,0 +1,392 @@
+#!/usr/bin/python3
+"""SmartLinux USB mode helper (runs as root through pkexec).
+
+Temporarily switches ONE USB storage adapter from the UAS driver to the older
+Bulk-Only (usb-storage) driver, so smartctl can read the full ATA SMART table that
+some bridges hide in UAS mode, and switches it back afterwards.
+
+    usb-mode-helper set-bot BUSID VID PID
+    usb-mode-helper restore BUSID VID PID
+
+BUSID is a USB device id from sysfs (e.g. "2-1.2"), VID/PID are 4 lowercase hex
+digits. Both subcommands are idempotent. Nothing else is accepted.
+
+set-bot appends only "VID:PID:u" to /sys/module/usb_storage/parameters/quirks
+(existing entries are kept), records the previous state in /run/smartlinux/,
+re-attaches the USB device and waits (max 60 s) until it is back on usb-storage.
+restore removes only that entry again (if set-bot added it) and re-attaches.
+
+Self-contained on purpose: it must not import the (user-writable in dev setups)
+smartlinux package while running as root.
+"""
+import glob
+import json
+import os
+import re
+import sys
+import time
+
+SYSFS = "/sys"
+MOUNTINFO = "/proc/self/mountinfo"
+STATE_DIR = "/run/smartlinux"
+WAIT_TIMEOUT = 60.0
+
+BUSID_RE = re.compile(r"^\d+-\d+(\.\d+)*$")
+HEX4_RE = re.compile(r"^[0-9a-f]{4}$")
+QUIRK_ENTRY_RE = re.compile(r"^([0-9a-fA-F]{1,4}):([0-9a-fA-F]{1,4}):([a-zA-Z]*)$")
+
+USB_STORAGE = "usb-storage"
+UAS = "uas"
+MASS_STORAGE_CLASS = "08"
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
+EXIT_INVALID_DEVICE = 3
+EXIT_TIMEOUT = 4
+EXIT_BUSY = 5
+
+
+class HelperError(Exception):
+    def __init__(self, message, code=EXIT_ERROR):
+        super().__init__(message)
+        self.code = code
+
+
+# ---------------------------------------------------------------- arguments
+
+def validate_args(argv):
+    """Returns (command, busid, vid, pid) or raises HelperError(EXIT_USAGE)."""
+    if len(argv) != 4 or argv[0] not in ("set-bot", "restore"):
+        raise HelperError("usage: usb-mode-helper {set-bot|restore} BUSID VID PID", EXIT_USAGE)
+    command, busid, vid, pid = argv
+    if not BUSID_RE.match(busid):
+        raise HelperError(f"invalid USB bus id: {busid!r}", EXIT_USAGE)
+    if not HEX4_RE.match(vid) or not HEX4_RE.match(pid):
+        raise HelperError(f"invalid VID/PID: {vid!r}:{pid!r}", EXIT_USAGE)
+    return command, busid, vid, pid
+
+
+# ---------------------------------------------------------------- quirks list
+
+def parse_quirks(text):
+    """'a:b:u, c:d:x\\n' -> ['a:b:u', 'c:d:x'] (empty items dropped, order kept)."""
+    return [item.strip() for item in (text or "").strip().split(",") if item.strip()]
+
+
+def format_quirks(entries):
+    return ",".join(entries)
+
+
+def our_entry(vid, pid):
+    return f"{vid}:{pid}:u"
+
+
+def entries_for_device(entries, vid, pid):
+    """Entries that the kernel would match for this VID:PID (it compares numerically)."""
+    found = []
+    for entry in entries:
+        m = QUIRK_ENTRY_RE.match(entry)
+        if m and int(m.group(1), 16) == int(vid, 16) and int(m.group(2), 16) == int(pid, 16):
+            found.append(entry)
+    return found
+
+
+def add_entry(entries, vid, pid):
+    """Returns (new_entries, added).
+
+    The kernel uses the FIRST entry matching a device, so if the user already has an
+    entry for it we never shadow or rewrite it: with the 'u' flag there is nothing to
+    do, without it we refuse rather than silently change their configuration.
+    """
+    existing = entries_for_device(entries, vid, pid)
+    if existing:
+        flags = QUIRK_ENTRY_RE.match(existing[0]).group(3).lower()
+        if "u" in flags:
+            return list(entries), False
+        raise HelperError(
+            f"a usb-storage quirk for {vid}:{pid} is already configured ({existing[0]}); not changing it",
+            EXIT_INVALID_DEVICE,
+        )
+    return list(entries) + [our_entry(vid, pid)], True
+
+
+def remove_entry(entries, vid, pid):
+    """Removes only our exact 'vid:pid:u' entry; everything else stays as it was."""
+    ours = our_entry(vid, pid)
+    return [e for e in entries if e.lower() != ours]
+
+
+def quirks_path(sysfs):
+    return os.path.join(sysfs, "module", "usb_storage", "parameters", "quirks")
+
+
+def read_quirks(sysfs):
+    path = quirks_path(sysfs)
+    try:
+        with open(path, encoding="ascii") as f:
+            return parse_quirks(f.read())
+    except FileNotFoundError:
+        raise HelperError("usb-storage module is not loaded (no quirks parameter)")
+
+
+def write_quirks(sysfs, entries):
+    """Writes the whole list, then reads it back: the change must really be applied.
+
+    A trailing newline is mandatory: with an empty list a bare write("") issues no write(2)
+    at all, the module parameter keeps its old value and the Bulk-Only quirk would stay
+    forced (observed live: restore timed out waiting for the adapter to come back on uas).
+    """
+    wanted = format_quirks(entries)
+    try:
+        with open(quirks_path(sysfs), "w", encoding="ascii") as f:
+            f.write(wanted + "\n")
+    except OSError as e:
+        raise HelperError(f"could not write usb-storage quirks: {e}")
+    actual = format_quirks(parse_quirks(open(quirks_path(sysfs), encoding="ascii").read()))
+    if actual.lower() != wanted.lower():
+        raise HelperError(f"usb-storage quirks did not change as requested (now: {actual!r})")
+
+
+# ---------------------------------------------------------------- sysfs device
+
+def usb_device_dir(sysfs, busid):
+    return os.path.join(sysfs, "bus", "usb", "devices", busid)
+
+
+def _read(path):
+    try:
+        with open(path, encoding="ascii", errors="replace") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def verify_device(sysfs, busid, vid, pid):
+    """The bus id must name a USB device whose sysfs VID/PID match and that has a
+    mass-storage interface; otherwise nothing is touched."""
+    dev = usb_device_dir(sysfs, busid)
+    if not os.path.isdir(dev):
+        raise HelperError(f"no USB device {busid}", EXIT_INVALID_DEVICE)
+    if _read(os.path.join(dev, "idVendor")).lower() != vid or _read(os.path.join(dev, "idProduct")).lower() != pid:
+        raise HelperError(f"USB device {busid} is not {vid}:{pid}", EXIT_INVALID_DEVICE)
+    if not storage_interfaces(sysfs, busid):
+        raise HelperError(f"USB device {busid} has no mass-storage interface", EXIT_INVALID_DEVICE)
+
+
+def storage_interfaces(sysfs, busid):
+    dev = usb_device_dir(sysfs, busid)
+    found = []
+    for intf in sorted(glob.glob(os.path.join(glob.escape(dev), f"{busid}:*"))):
+        if _read(os.path.join(intf, "bInterfaceClass")).lower() == MASS_STORAGE_CLASS:
+            found.append(intf)
+    return found
+
+
+def interface_driver(sysfs, busid):
+    """Driver bound to the mass-storage interface ('uas', 'usb-storage') or None."""
+    for intf in storage_interfaces(sysfs, busid):
+        link = os.path.join(intf, "driver")
+        if os.path.islink(link):
+            return os.path.basename(os.readlink(link))
+    return None
+
+
+def has_block_device(sysfs, busid):
+    dev = usb_device_dir(sysfs, busid)
+    pattern = os.path.join(glob.escape(dev), f"{busid}:*", "host*", "target*", "*", "block", "*")
+    return bool(glob.glob(pattern))
+
+
+def disk_identities(sysfs, busid):
+    """Device numbers ('8:16') and /dev paths of the USB device's disks and partitions."""
+    dev = usb_device_dir(sysfs, busid)
+    pattern = os.path.join(glob.escape(dev), f"{busid}:*", "host*", "target*", "*", "block", "*")
+    numbers, paths = set(), set()
+    for blk in glob.glob(pattern):
+        name = os.path.basename(blk)
+        paths.add(f"/dev/{name}")
+        for part in glob.glob(os.path.join(glob.escape(blk), f"{glob.escape(name)}*")):
+            if os.path.isdir(part):
+                paths.add(f"/dev/{os.path.basename(part)}")
+        for dev_file in [os.path.join(blk, "dev")] + glob.glob(os.path.join(glob.escape(blk), "*", "dev")):
+            num = _read(dev_file)
+            if re.match(r"^\d+:\d+$", num):
+                numbers.add(num)
+    return numbers, paths
+
+
+def mounted_on_device(sysfs, busid, mountinfo=None):
+    """Mount points of filesystems that live on this USB device's disks/partitions.
+
+    Compared by device number AND by source path: btrfs reports an anonymous device
+    number in mountinfo, so only the source ('/dev/sdb1') identifies it.
+    """
+    numbers, paths = disk_identities(sysfs, busid)
+    if not numbers and not paths:
+        return []
+    found = []
+    try:
+        with open(mountinfo or MOUNTINFO, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        head, sep, tail = line.partition(" - ")
+        fields = head.split()
+        tail_fields = tail.split()
+        if not sep or len(fields) < 5 or len(tail_fields) < 2:
+            continue
+        if fields[2] in numbers or tail_fields[1] in paths:
+            found.append(fields[4].replace("\\040", " "))
+    return found
+
+
+def ensure_not_mounted(sysfs, busid, mountinfo=None):
+    """Root-side backstop: re-attaching a USB port under a mounted filesystem is an abrupt
+    disconnect (journal errors, btrfs emergency shutdown). The caller is supposed to have
+    unmounted already; if anything raced or failed, refuse instead of cutting the disk."""
+    mounts = mounted_on_device(sysfs, busid, mountinfo)
+    if mounts:
+        raise HelperError(
+            "refusing to re-attach: still mounted: " + ", ".join(mounts) + ". Unmount them first.",
+            EXIT_BUSY,
+        )
+
+
+def reattach(sysfs, busid, sleep=time.sleep):
+    """Software unplug/replug: unbind the USB device from the generic 'usb' driver and
+    bind it again, so its interfaces are probed again with the current quirks."""
+    drv = os.path.join(sysfs, "bus", "usb", "drivers", "usb")
+    for action in ("unbind", "bind"):
+        try:
+            with open(os.path.join(drv, action), "w", encoding="ascii") as f:
+                f.write(busid)
+        except OSError as e:
+            if action == "bind":
+                raise HelperError(f"could not re-attach {busid}: {e}")
+            # unbind fails if it is not bound right now; bind is what matters
+        sleep(0.5)
+
+
+def wait_for_driver(sysfs, busid, driver, timeout=WAIT_TIMEOUT, sleep=time.sleep, clock=time.monotonic):
+    """Waits until the device is bound to `driver` and its disk is visible again."""
+    deadline = clock() + timeout
+    while True:
+        if interface_driver(sysfs, busid) == driver and has_block_device(sysfs, busid):
+            return
+        if clock() >= deadline:
+            raise HelperError(
+                f"timed out after {int(timeout)} s waiting for {busid} to come back on {driver}",
+                EXIT_TIMEOUT,
+            )
+        sleep(0.5)
+
+
+# ---------------------------------------------------------------- state
+
+def state_file(state_dir, busid):
+    return os.path.join(state_dir, f"usbmode-{busid}.json")
+
+
+def load_state(state_dir, busid):
+    try:
+        with open(state_file(state_dir, busid), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def save_state(state_dir, busid, state):
+    os.makedirs(state_dir, mode=0o700, exist_ok=True)
+    path = state_file(state_dir, busid)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+    os.replace(tmp, path)
+
+
+def clear_state(state_dir, busid):
+    try:
+        os.remove(state_file(state_dir, busid))
+    except FileNotFoundError:
+        pass
+
+
+# ---------------------------------------------------------------- commands
+
+def set_bot(sysfs, state_dir, busid, vid, pid, timeout=WAIT_TIMEOUT, sleep=time.sleep, clock=time.monotonic):
+    verify_device(sysfs, busid, vid, pid)
+    if interface_driver(sysfs, busid) != USB_STORAGE:
+        ensure_not_mounted(sysfs, busid)
+    state = load_state(state_dir, busid)
+    entries = read_quirks(sysfs)
+
+    if state is None:
+        new_entries, added = add_entry(entries, vid, pid)
+        state = {
+            "busid": busid, "vid": vid, "pid": pid,
+            "previous_quirks": format_quirks(entries),
+            "previous_driver": interface_driver(sysfs, busid) or UAS,
+            "added": added,
+        }
+        # State first: if anything below fails, 'restore' still knows what to undo.
+        save_state(state_dir, busid, state)
+        if added:
+            write_quirks(sysfs, new_entries)
+    elif state.get("added") and our_entry(vid, pid) not in [e.lower() for e in entries]:
+        write_quirks(sysfs, entries + [our_entry(vid, pid)])
+
+    if interface_driver(sysfs, busid) != USB_STORAGE:
+        reattach(sysfs, busid, sleep)
+    wait_for_driver(sysfs, busid, USB_STORAGE, timeout, sleep, clock)
+    return "bulk-only mode active"
+
+
+def restore(sysfs, state_dir, busid, vid, pid, timeout=WAIT_TIMEOUT, sleep=time.sleep, clock=time.monotonic):
+    verify_device(sysfs, busid, vid, pid)
+    state = load_state(state_dir, busid)
+    if state is None:
+        return "nothing to restore"
+    if (state.get("vid"), state.get("pid")) != (vid, pid):
+        raise HelperError(f"saved state for {busid} belongs to another device", EXIT_INVALID_DEVICE)
+
+    if interface_driver(sysfs, busid) != (state.get("previous_driver") or UAS):
+        ensure_not_mounted(sysfs, busid)
+
+    entries = read_quirks(sysfs)
+    if state.get("added"):
+        remaining = remove_entry(entries, vid, pid)
+        if remaining != entries:
+            write_quirks(sysfs, remaining)
+        entries = remaining
+
+    target = state.get("previous_driver") or UAS
+    still_forced = any(
+        "u" in QUIRK_ENTRY_RE.match(e).group(3).lower() for e in entries_for_device(entries, vid, pid)
+    )
+    if not still_forced and interface_driver(sysfs, busid) != target:
+        reattach(sysfs, busid, sleep)
+        wait_for_driver(sysfs, busid, target, timeout, sleep, clock)
+    # Kept until the device is really back, so a retry after a timeout still works.
+    clear_state(state_dir, busid)
+    return f"normal mode restored ({target})"
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        command, busid, vid, pid = validate_args(argv)
+        if os.geteuid() != 0:
+            raise HelperError("must run as root (via pkexec)", EXIT_USAGE)
+        fn = set_bot if command == "set-bot" else restore
+        print(fn(SYSFS, STATE_DIR, busid, vid, pid))
+        return EXIT_OK
+    except HelperError as e:
+        print(f"usb-mode-helper: {e}", file=sys.stderr)
+        return e.code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

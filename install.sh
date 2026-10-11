@@ -42,6 +42,11 @@ if ! command -v plink >/dev/null 2>&1; then
     echo "     macOS:          brew install putty"
 fi
 
+# 2c. Root helper for the USB compatibility mode (started only through pkexec) + polkit action
+install -Dm755 "$OPT_DIR/packaging/common/usb-mode-helper" /usr/lib/smartlinux/usb-mode-helper
+install -Dm644 "$OPT_DIR/packaging/common/org.smartlinux.usbmode.policy" \
+    /usr/share/polkit-1/actions/org.smartlinux.usbmode.policy
+
 # 3. Deploy binary wrapper
 cat << 'EOF' > "$BIN_FILE"
 #!/usr/bin/env bash

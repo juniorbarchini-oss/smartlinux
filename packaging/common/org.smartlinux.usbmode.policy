@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>SmartLinux</vendor>
+  <vendor_url>https://github.com/juniorbarchini-oss/smartlinux</vendor_url>
+
+  <action id="org.smartlinux.usbmode">
+    <description>Switch a USB disk adapter to compatibility mode to read S.M.A.R.T.</description>
+    <message>SmartLinux needs administrator permission to briefly switch your USB disk adapter to compatibility (Bulk-Only) mode so it can read the full S.M.A.R.T. data, and to switch it back afterwards. The disk is disconnected and reconnected by software; nothing is written to it.</message>
+    <icon_name>smartlinux</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <!-- _keep: the restore step right after the read does not ask a second time -->
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/smartlinux/usb-mode-helper</annotate>
+  </action>
+</policyconfig>

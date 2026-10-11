@@ -1,3 +1,4 @@
+from html import escape
 from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -58,10 +59,12 @@ class DetailPanel(QWidget):
     export_requested = Signal(object)       # Emits current DiskInfo
     eject_requested = Signal(str)           # Emits device_path for local USB drive
     self_test_requested = Signal(object, str)  # Emits (DiskInfo, test_type: "short"|"long")
+    compat_mode_requested = Signal(object)  # Emits DiskInfo whose USB adapter hides SMART (UAS)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_disk: Optional[DiskInfo] = None
+        self._compat_busy = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -131,6 +134,21 @@ class DetailPanel(QWidget):
         eb_layout.addWidget(self.error_lbl, 1)
         main_layout.addWidget(self.error_banner)
 
+        # Shown on a reading taken in USB compatibility (Bulk-Only) mode
+        self.compat_note_banner = QFrame()
+        self.compat_note_banner.setObjectName("SuccessBanner")
+        self.compat_note_banner.setVisible(False)
+        cn_layout = QHBoxLayout(self.compat_note_banner)
+        cn_layout.setContentsMargins(12, 8, 12, 8)
+        cn_icon = QLabel("🔌")
+        cn_icon.setStyleSheet("font-size: 16px; background: transparent;")
+        cn_layout.addWidget(cn_icon)
+        self.compat_note_lbl = QLabel("")
+        self.compat_note_lbl.setWordWrap(True)
+        self.compat_note_lbl.setStyleSheet("color: #56d364; font-size: 13px; font-weight: 500; background: transparent;")
+        cn_layout.addWidget(self.compat_note_lbl, 1)
+        main_layout.addWidget(self.compat_note_banner)
+
         # 2. Quick Metrics Grid
         metrics_layout = QHBoxLayout()
         metrics_layout.setSpacing(12)
@@ -168,6 +186,35 @@ class DetailPanel(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setAlternatingRowColors(True)
         main_layout.addWidget(self.table)
+
+        # USB adapter hides SMART in UAS mode: explanation + opt-in compatibility read,
+        # shown in place of the (empty) attribute table.
+        self.compat_notice = QFrame()
+        self.compat_notice.setObjectName("WarningBanner")
+        self.compat_notice.setVisible(False)
+        notice_layout = QVBoxLayout(self.compat_notice)
+        notice_layout.setContentsMargins(16, 14, 16, 14)
+        notice_layout.setSpacing(10)
+        notice_title = QLabel("🔌  The USB adapter is hiding this drive's S.M.A.R.T. data")
+        notice_title.setStyleSheet("font-size: 15px; font-weight: bold; color: #e3b341; background: transparent;")
+        notice_layout.addWidget(notice_title)
+        self.compat_notice_lbl = QLabel("")
+        self.compat_notice_lbl.setWordWrap(True)
+        self.compat_notice_lbl.setTextFormat(Qt.RichText)
+        self.compat_notice_lbl.setStyleSheet("font-size: 13px; color: #c9d1d9; background: transparent;")
+        notice_layout.addWidget(self.compat_notice_lbl)
+        notice_btn_row = QHBoxLayout()
+        self.compat_btn = QPushButton("Read SMART in compatibility mode…")
+        self.compat_btn.setObjectName("AccentButton")
+        self.compat_btn.clicked.connect(self._on_compat_clicked)
+        notice_btn_row.addWidget(self.compat_btn)
+        self.compat_progress_lbl = QLabel("")
+        self.compat_progress_lbl.setWordWrap(True)
+        self.compat_progress_lbl.setStyleSheet("font-size: 13px; color: #e3b341; background: transparent;")
+        notice_btn_row.addWidget(self.compat_progress_lbl, 1)
+        notice_layout.addLayout(notice_btn_row)
+        notice_layout.addStretch()
+        main_layout.addWidget(self.compat_notice, 1)
 
         # 4. Action Bar
         action_layout = QHBoxLayout()
@@ -209,9 +256,9 @@ class DetailPanel(QWidget):
 
     def display_disk(self, disk: DiskInfo):
         self.current_disk = disk
-        self.scan_btn.setEnabled(True)
+        self.scan_btn.setEnabled(not self._compat_busy)
         self.export_btn.setEnabled(True)
-        self.self_test_btn.setEnabled(True)
+        self.self_test_btn.setEnabled(not self._compat_busy)
 
         # Eject button visibility
         if disk.is_usb and not disk.is_remote:
@@ -248,6 +295,27 @@ class DetailPanel(QWidget):
             self.self_test_status_lbl.setText("Last Self-Test: — (use the 'Self-Test' button below, then 'Scan Now')")
             self.self_test_status_lbl.setStyleSheet("font-size: 13px; color: #8b949e; font-weight: 600;")
 
+        # USB compatibility mode: note on a Bulk-Only reading / notice when SMART is hidden
+        candidate = disk.uas_candidate if not disk.compat_read_note else None
+        if disk.compat_read_note:
+            self.compat_note_lbl.setText(disk.compat_read_note)
+        self.compat_note_banner.setVisible(bool(disk.compat_read_note))
+        if candidate is not None:
+            self.compat_notice_lbl.setText(
+                f"Your drive answered the health check, but the USB adapter it is connected through "
+                f"(<b>{escape(candidate.name)}</b>, USB ID {candidate.usb_id}) does not pass detailed "
+                f"S.M.A.R.T. requests through while it runs in its fast <b>UAS</b> mode. That is why "
+                f"temperature, power-on hours and the attribute table are missing. "
+                f"<b>Nothing is wrong with the drive.</b><br><br>"
+                f"SmartLinux can briefly switch the adapter to its slower compatibility "
+                f"(Bulk-Only) mode, read the full data and switch it back. You will see exactly "
+                f"what happens before anything is done."
+            )
+        self.compat_notice.setVisible(candidate is not None)
+        self.table.setVisible(candidate is None)
+        if not self._compat_busy:
+            self.compat_progress_lbl.setText("")
+
         # Error Banner
         if disk.error_message:
             self.error_lbl.setText(f"Diagnostic not available: {disk.error_message}")
@@ -268,7 +336,7 @@ class DetailPanel(QWidget):
             if not disk.attributes:
                 self.temp_card.update_data("---", "Click 'Scan Now'")
             else:
-                sub = "Not supported by USB bridge" if disk.is_usb else "No SMART thermal sensor"
+                sub = self._missing_metric_hint(disk, "No SMART thermal sensor")
                 self.temp_card.update_data("N/A", sub)
 
         if disk.power_on_hours is not None:
@@ -285,7 +353,7 @@ class DetailPanel(QWidget):
             if not disk.attributes:
                 self.hours_card.update_data("---", "Click 'Scan Now'")
             else:
-                sub = "Not supported by USB bridge" if disk.is_usb else "Not available"
+                sub = self._missing_metric_hint(disk, "Not available")
                 self.hours_card.update_data("N/A", sub)
 
         if disk.power_cycles is not None:
@@ -294,7 +362,7 @@ class DetailPanel(QWidget):
             if not disk.attributes:
                 self.cycles_card.update_data("---", "Click 'Scan Now'")
             else:
-                sub = "Not supported by USB bridge" if disk.is_usb else "Not available"
+                sub = self._missing_metric_hint(disk, "Not available")
                 self.cycles_card.update_data("N/A", sub)
 
         # Table
@@ -302,6 +370,21 @@ class DetailPanel(QWidget):
 
         # History tab (reads local JSONL history for this disk's serial)
         self.history_tab.load_history(disk)
+
+    @staticmethod
+    def _missing_metric_hint(disk: DiskInfo, fallback: str) -> str:
+        if disk.uas_candidate is not None and not disk.compat_read_note:
+            return "Hidden by the USB adapter (UAS mode)"
+        return "Not supported by USB bridge" if disk.is_usb else fallback
+
+    def set_compat_busy(self, busy: bool, message: str = ""):
+        """Locks the panel while a compatibility-mode read is running."""
+        self._compat_busy = busy
+        self.compat_btn.setEnabled(not busy)
+        self.compat_btn.setText("⏳ Working…" if busy else "Read SMART in compatibility mode…")
+        self.compat_progress_lbl.setText(message)
+        for btn in (self.scan_btn, self.self_test_btn, self.eject_btn):
+            btn.setEnabled(not busy and self.current_disk is not None)
 
     def _update_health_badge(self, disk: DiskInfo):
         if not disk.attributes and disk.health_status == HealthStatus.UNKNOWN:
@@ -406,6 +489,10 @@ class DetailPanel(QWidget):
     def _on_eject_clicked(self):
         if self.current_disk:
             self.eject_requested.emit(self.current_disk.device_path)
+
+    def _on_compat_clicked(self):
+        if self.current_disk and self.current_disk.uas_candidate is not None:
+            self.compat_mode_requested.emit(self.current_disk)
 
     def _on_self_test_clicked(self, test_type: str):
         if self.current_disk:

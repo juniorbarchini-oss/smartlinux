@@ -24,6 +24,8 @@ Designed with an **on-demand philosophy**, SmartLinux avoids unnecessary drive s
   Connect seamlessly to remote servers (e.g., ZimaOS, Proxmox, TrueNAS, Raspberry Pi, Ubuntu Server, Debian, macOS) using Password or Private Key authentication with automatic `sudo` elevation.
 * **🕰️ Legacy Device Support:**  
   Reads very old remote equipment (e.g. WD My Cloud NAS with `smartctl 5.38`, BusyBox, `ssh-dss`-only SSH). See [Legacy devices](#-legacy-devices).
+* **🔌 USB Adapters That Hide SMART:**  
+  Opt-in compatibility mode that briefly switches a UAS adapter to Bulk-Only to read the full SMART table, then switches it back. See [USB adapters that hide SMART](#-usb-adapters-that-hide-smart).
 * **📄 Multi-Format Diagnostic Reports:**  
   Export comprehensive diagnostic reports with multi-drive selection and custom directory browsing:
   * **📝 Markdown (`.md`):** Clean GitHub-Flavored Markdown tables.
@@ -184,6 +186,38 @@ Tests run offline against real captures in `tests/fixtures/legacy_smartctl_5_38/
 
 ---
 
+## 🔌 USB adapters that hide SMART
+
+Some USB adapters (e.g. the Seagate bridge in the **DJI Fly Drive**, USB ID `0bc2:a020`) only answer basic
+SCSI commands while the kernel drives them with the fast **UAS** driver: SmartLinux then only gets "Healthy",
+with no temperature, power-on hours or attribute table. The drive is fine; the adapter just does not pass
+the SMART requests through. With the older **Bulk-Only** driver (`usb-storage`, kernel quirk `VID:PID:u`)
+the same drive returns the full ATA table.
+
+When SmartLinux detects this (local USB disk, interface on `uas`, reading without a SMART table) it explains it
+in the Diagnostics tab and offers **Read SMART in compatibility mode…**. Nothing happens until you confirm a
+dialog that lists every step:
+
+1. The drive's volumes are unmounted (`udisksctl`, as your user).
+2. You are asked for administrator permission (`pkexec`, polkit action `org.smartlinux.usbmode`).
+3. The packaged helper `/usr/lib/smartlinux/usb-mode-helper` adds **only** `VID:PID:u` to
+   `/sys/module/usb_storage/parameters/quirks` (existing entries are kept, the previous value is saved in
+   `/run/smartlinux/`) and re-attaches the USB port: ~20-30 s, the `/dev/sdX` name may change.
+4. SMART is read (read-only, no self-tests).
+5. The helper removes its entry and re-attaches the port again (always, also after an error), and the volumes
+   are mounted again by UUID unless your desktop already did it.
+
+SmartLinux refuses if a volume is in use (it shows which programs), if `/`, `/boot`, `/home`, swap or an
+LUKS/LVM volume lives on the disk, or if the disk is not on USB. Notes: the drive is slower while in
+compatibility mode; if SmartLinux is killed halfway the quirk stays until you reboot or replug the drive
+(or run `pkexec /usr/lib/smartlinux/usb-mode-helper restore BUSID VID PID`); the serial number reported
+differs between modes, so the reading shows up under its own entry in the History tab.
+
+The helper and policy are installed by the `.deb`, the Arch package and `install.sh` (not when running from
+the source tree). Optional tools: `udisks2`, `polkit`/`pkexec`, `lsof`.
+
+---
+
 ## 📂 Project Architecture
 
 ```text
@@ -201,6 +235,7 @@ smartlinux/
 │   │   ├── remote_common.py    # Transport-independent smartctl / discovery logic (JSON + text mode)
 │   │   ├── smart_text_parser.py # Plain-text smartctl parser for old smartctl 5.x
 │   │   ├── watcher.py          # Netlink kernel uevent hotplug watcher
+│   │   ├── usb_compat.py       # UAS adapters hiding SMART: detection, guards, compatibility-mode flow
 │   │   ├── exporter.py         # Multi-format report exporter (.md, .pdf, .doc, .xls)
 │   │   └── config_manager.py   # Secure server persistence with system keyring integration
 │   ├── ui/
@@ -211,6 +246,7 @@ smartlinux/
 │   │   ├── history_tab.py      # Historical SMART attribute delta and degradation viewer
 │   │   ├── server_dialog.py    # Remote SSH server configuration & host key approval modal
 │   │   ├── export_dialog.py    # Multi-disk and multi-format export dialog
+│   │   ├── compat_dialog.py    # Consent dialog for the USB compatibility mode
 │   │   └── setup_dialog.py     # 1-click dependency & SUID installer modal
 │   ├── assets/
 │   │   ├── icon.svg            # Vector application icon
@@ -222,9 +258,12 @@ smartlinux/
 │   ├── test_ansible_smart_check.py # Automated tests for ATA/NVMe thresholds and ntfy alerts
 │   ├── test_smart_text_parser.py   # Text parser tests (real smartctl 5.38 captures in fixtures/)
 │   ├── test_legacy_remote.py       # Simulated WD My Cloud EX4: discovery, text mode, self-test
-│   └── test_legacy_ssh_engine.py   # plink engine and paramiko→plink automatic selection
+│   ├── test_legacy_ssh_engine.py   # plink engine and paramiko→plink automatic selection
+│   ├── test_usb_compat*.py         # USB compatibility mode on a fake sysfs (detection, guards, flow, UI)
+│   └── test_usb_mode_helper.py     # Root helper: argument checks, quirks editing, idempotence
 ├── smartlinux.sh               # One-click launcher script
 ├── install.sh                  # System desktop & icon installer
+├── packaging/common/           # usb-mode-helper (root, via pkexec) + org.smartlinux.usbmode.policy
 ├── build_portable.sh           # Standalone binary compiler (PyInstaller)
 ├── smartlinux.desktop          # Linux desktop entry specification
 ├── requirements.txt            # Python dependencies (PySide6, paramiko, keyring)

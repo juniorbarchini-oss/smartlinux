@@ -305,6 +305,8 @@ class DetailPanel(QWidget):
             extra.append(f"Controller: <b>{escape(disk.controller)}{slot}</b>")
         if extra:
             info_text += "<br>" + " &nbsp;|&nbsp; ".join(extra)
+        if disk.raid_detail:
+            info_text += f"<br>Vendor tool: <b>{escape(disk.raid_detail)}</b>"
         self.info_lbl.setText(info_text)
 
         # Last Self-Test result (set by 'Self-Test' button + a later 'Refresh')
@@ -412,6 +414,7 @@ class DetailPanel(QWidget):
             f" &nbsp;|&nbsp; Controller: <b>{controller}</b><br>"
             f"Logical volume of the controller: it has no S.M.A.R.T. data of its own. "
             f"Check the physical disks listed under the controller."
+            + (f"<br>Vendor tool: <b>{escape(disk.raid_detail)}</b>" if disk.raid_detail else "")
         )
         self.self_test_status_lbl.setText("Last Self-Test: not applicable (virtual drive)")
         self.self_test_status_lbl.setStyleSheet("font-size: 13px; color: #8b949e; font-weight: 600;")
@@ -419,11 +422,23 @@ class DetailPanel(QWidget):
         self.compat_notice.setVisible(False)
         self.table.setVisible(True)
         self.error_banner.setVisible(False)
-        self.health_badge.setText(f"▫️  {VIRTUAL_SUMMARY.upper()}")
-        self.health_badge.setStyleSheet(
-            "background-color: #21262d; color: #8b949e; border: 1px solid #30363d; "
-            "font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 12px;"
-        )
+        if disk.raid_health and disk.raid_volume:
+            # state reported by the controller itself (vendor tool), not invented
+            colors = {HealthStatus.HEALTHY: ("#04260f", "#3fb950", "#238636"),
+                      HealthStatus.WARNING: ("#382402", "#e3b341", "#9e6a03"),
+                      HealthStatus.FAILED: ("#490202", "#ff7b72", "#da3633")}
+            bg, fg, border = colors.get(disk.raid_health, ("#21262d", "#8b949e", "#30363d"))
+            self.health_badge.setText(f"{disk.raid_health.icon}  RAID VOLUME: {disk.raid_volume.upper()}")
+            self.health_badge.setStyleSheet(
+                f"background-color: {bg}; color: {fg}; border: 1px solid {border}; "
+                "font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 12px;"
+            )
+        else:
+            self.health_badge.setText(f"▫️  {VIRTUAL_SUMMARY.upper()}")
+            self.health_badge.setStyleSheet(
+                "background-color: #21262d; color: #8b949e; border: 1px solid #30363d; "
+                "font-weight: bold; font-size: 13px; padding: 6px 14px; border-radius: 12px;"
+            )
         for card in (self.temp_card, self.hours_card, self.cycles_card):
             card.update_data("—", "Not applicable (virtual drive)")
         self._populate_table(disk)

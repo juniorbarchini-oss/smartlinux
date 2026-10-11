@@ -1,0 +1,17 @@
+{
+"Controllers":[
+{
+	"Command Status" : {
+		"CLI Version" : "007.1910.0000.0000 Oct 08, 2021",
+		"Operating system" : "Linux 7.0.14-20-pve",
+		"Status Code" : 0,
+		"Status" : "Success",
+		"Description" : "None"
+	},
+	"Response Data" : {
+		"Controller Count" : 1
+	}
+}
+]
+}
+

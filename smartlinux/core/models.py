@@ -98,6 +98,11 @@ class DiskInfo:
     slot: Optional[int] = None
     # Logical volume exported by a RAID controller: no SMART of its own
     is_virtual: bool = False
+    # From the vendor tool (perccli/storcli, "Vendor tool" mode only): e.g. "VMDATA1 · RAID0 ·
+    # 1 disk · no redundancy" on a virtual drive, the volume name on a physical disk
+    raid_volume: Optional[str] = None
+    raid_detail: Optional[str] = None
+    raid_health: Optional[HealthStatus] = None
     # SAS/SCSI identity details (filled from smartctl when available)
     vendor: Optional[str] = None
     form_factor: Optional[str] = None

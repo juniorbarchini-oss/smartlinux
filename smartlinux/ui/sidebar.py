@@ -153,6 +153,24 @@ class SidebarWidget(QWidget):
                 return found
         return None
 
+    def select_disk(self, disk: DiskInfo):
+        """Selects a disk's row (used by the Server panel's vendor tool tables)."""
+        root = self.local_root
+        if disk.is_remote:
+            for i in range(self.remote_root.childCount()):
+                srv = self.remote_root.child(i)
+                if (srv.data(0, Qt.UserRole) or {}).get("server_id") == disk.server_id:
+                    root = srv
+                    break
+            else:
+                return
+        item = self._find_disk_item(root, disk.uid)
+        if item:
+            self.tree.blockSignals(True)
+            self.tree.setCurrentItem(item)
+            self.tree.blockSignals(False)
+            self.tree.scrollToItem(item)
+
     def update_disk_info(self, disk: DiskInfo):
         if not disk.is_remote:
             self._local_drives[disk.uid] = disk
@@ -175,15 +193,25 @@ class SidebarWidget(QWidget):
     def _update_disk_item(self, item: QTreeWidgetItem, disk: DiskInfo):
         size_hint = f" ({disk.size_human})" if disk.size_human and disk.size_human != "Unknown" else ""
         if disk.is_virtual:
-            label = f"▫️  {disk.name} • {VIRTUAL_SUMMARY}{size_hint}"
-            item.setToolTip(0, f"{disk.model} — logical volume of {disk.controller or 'a RAID controller'}; "
-                               f"no S.M.A.R.T. of its own")
+            if disk.raid_volume:
+                # Vendor tool data: "sdb · VMDATA1 · RAID0 · 1 disk · no redundancy"
+                icon = disk.raid_health.icon if disk.raid_health else "▫️"
+                label = f"{icon}  {disk.name} · {disk.raid_volume}{size_hint}"
+            else:
+                label = f"▫️  {disk.name} • {VIRTUAL_SUMMARY}{size_hint}"
+            item.setToolTip(0, disk.raid_detail or f"{disk.model} — logical volume of "
+                               f"{disk.controller or 'a RAID controller'}; no S.M.A.R.T. of its own")
         else:
             icon_str = disk.health_status.icon if disk.attributes else "⚪"
+            if disk.raid_health and disk.raid_health.value in ("warning", "failed") and \
+                    (not disk.attributes or disk.raid_health.value == "failed"):
+                icon_str = disk.raid_health.icon  # the controller itself reports a problem
             usb_tag = " [USB 🔌]" if disk.is_usb else ""
-            label = f"{icon_str}  {disk.name} • {disk.model}{size_hint}{usb_tag}"
+            volume = f" · {disk.raid_volume}" if disk.raid_volume else ""
+            label = f"{icon_str}  {disk.name} • {disk.model}{size_hint}{volume}{usb_tag}"
             if disk.smart_dev_type and disk.uid != disk.device_path:
-                item.setToolTip(0, f"smartctl -d {disk.smart_dev_type} {disk.device_path}")
+                tip = f"smartctl -d {disk.smart_dev_type} {disk.device_path}"
+                item.setToolTip(0, f"{tip}\n{disk.raid_detail}" if disk.raid_detail else tip)
         item.setText(0, label)
         item.setData(0, Qt.UserRole, {
             "type": "disk",

@@ -1,0 +1,288 @@
+{
+"Controllers":[
+{
+	"Command Status" : {
+		"CLI Version" : "007.1910.0000.0000 Oct 08, 2021",
+		"Operating system" : "Linux 7.0.14-20-pve",
+		"Controller" : 0,
+		"Status" : "Success",
+		"Description" : "None"
+	},
+	"Response Data" : {
+		"BBU_Info" : [
+			{
+				"Property" : "Type",
+				"Value" : "BBU"
+			},
+			{
+				"Property" : "Voltage",
+				"Value" : "3910 mV"
+			},
+			{
+				"Property" : "Current",
+				"Value" : "0 mA"
+			},
+			{
+				"Property" : "Temperature",
+				"Value" : "47 C"
+			},
+			{
+				"Property" : "Battery State",
+				"Value" : "Optimal"
+			}
+		],
+		"BBU_Firmware_Status" : [
+			{
+				"Property" : "Charging Status",
+				"Value" : "None"
+			},
+			{
+				"Property" : "Voltage",
+				"Value" : "OK"
+			},
+			{
+				"Property" : "Temperature",
+				"Value" : "OK"
+			},
+			{
+				"Property" : "Learn Cycle Requested",
+				"Value" : "No"
+			},
+			{
+				"Property" : "Learn Cycle Active",
+				"Value" : "No"
+			},
+			{
+				"Property" : "Learn Cycle Status",
+				"Value" : "OK"
+			},
+			{
+				"Property" : "Learn Cycle Timeout",
+				"Value" : "No"
+			},
+			{
+				"Property" : "I2C Errors Detected",
+				"Value" : "No"
+			},
+			{
+				"Property" : "Battery Pack Missing",
+				"Value" : "No"
+			},
+			{
+				"Property" : "Replacement required",
+				"Value" : "No"
+			},
+			{
+				"Property" : "Remaining Capacity Low",
+				"Value" : "No"
+			},
+			{
+				"Property" : "Periodic Learn Required",
+				"Value" : "No"
+			},
+			{
+				"Property" : "Transparent Learn",
+				"Value" : "No"
+			},
+			{
+				"Property" : "No space to cache offload",
+				"Value" : "No"
+			},
+			{
+				"Property" : "Pack is about to fail & should be replaced",
+				"Value" : "No"
+			},
+			{
+				"Property" : "Cache Offload premium feature required",
+				"Value" : "No"
+			},
+			{
+				"Property" : "Module microcode update required",
+				"Value" : "No"
+			}
+		],
+		"GasGaugeStatus" : [
+			{
+				"Property" : "GasGauge StatusCode",
+				"Value" : "0x38"
+			},
+			{
+				"Property" : "Fully Discharged",
+				"Value" : "N/A"
+			},
+			{
+				"Property" : "Fully Charged",
+				"Value" : "N/A"
+			},
+			{
+				"Property" : "Discharging",
+				"Value" : "N/A"
+			},
+			{
+				"Property" : "Initialized",
+				"Value" : "N/A"
+			},
+			{
+				"Property" : "Remaining Time Alarm",
+				"Value" : "N/A"
+			},
+			{
+				"Property" : "Terminate Discharge Alarm",
+				"Value" : "N/A"
+			},
+			{
+				"Property" : "Over Temperature",
+				"Value" : "N/A"
+			},
+			{
+				"Property" : "Charging Terminated",
+				"Value" : "N/A"
+			},
+			{
+				"Property" : "Over Charged",
+				"Value" : "N/A"
+			},
+			{
+				"Property" : "Relative State of Charge",
+				"Value" : "98%"
+			},
+			{
+				"Property" : "Charger System State",
+				"Value" : "Complete"
+			},
+			{
+				"Property" : "Remaining Capacity",
+				"Value" : 404
+			},
+			{
+				"Property" : "Full Charge Capacity",
+				"Value" : 416
+			},
+			{
+				"Property" : "Is SOH Good",
+				"Value" : "Yes"
+			},
+			{
+				"Property" : "Battery backup charge time",
+				"Value" : "0 hour(s)"
+			}
+		],
+		"BBU_Capacity_Info" : [
+			{
+				"Property" : "Relative State of Charge",
+				"Value" : "98%"
+			},
+			{
+				"Property" : "Absolute State of charge",
+				"Value" : "0%"
+			},
+			{
+				"Property" : "Remaining Capacity",
+				"Value" : "404 mAh"
+			},
+			{
+				"Property" : "Full Charge Capacity",
+				"Value" : "416 mAh"
+			},
+			{
+				"Property" : "Run time to empty",
+				"Value" : "Unavailable"
+			},
+			{
+				"Property" : "Average time to empty",
+				"Value" : "32 min"
+			},
+			{
+				"Property" : "Average Time to full",
+				"Value" : "Unavailable"
+			},
+			{
+				"Property" : "Cycle Count",
+				"Value" : "0"
+			},
+			{
+				"Property" : "Max Error",
+				"Value" : "0%"
+			},
+			{
+				"Property" : "Remaining Capacity Alarm",
+				"Value" : "0 mAh"
+			},
+			{
+				"Property" : "Remaining Time Alarm",
+				"Value" : "0 minutes(s)"
+			}
+		],
+		"BBU_Design_Info" : [
+			{
+				"Property" : "Date of Manufacture",
+				"Value" : "00/00/0"
+			},
+			{
+				"Property" : "Design Capacity",
+				"Value" : "460 mAh"
+			},
+			{
+				"Property" : "Design Voltage",
+				"Value" : "0 mV"
+			},
+			{
+				"Property" : "Specification Info",
+				"Value" : 0
+			},
+			{
+				"Property" : "Serial Number",
+				"Value" : 0
+			},
+			{
+				"Property" : "Pack Stat Configuration",
+				"Value" : "0"
+			},
+			{
+				"Property" : "Manufacture Name",
+				"Value" : "0x113"
+			},
+			{
+				"Property" : "Device Name",
+				"Value" : ""
+			},
+			{
+				"Property" : "Device Chemistry",
+				"Value" : ""
+			},
+			{
+				"Property" : "Battery FRU",
+				"Value" : "N/A"
+			},
+			{
+				"Property" : "Transparent Learn",
+				"Value" : 1
+			},
+			{
+				"Property" : "App Data",
+				"Value" : 1
+			},
+			{
+				"Property" : "Module Version",
+				"Value" : "0.4"
+			}
+		],
+		"BBU_Properties" : [
+			{
+				"Property" : "Auto Learn Period",
+				"Value" : "90d (7776000 seconds)"
+			},
+			{
+				"Property" : "Learn Delay Interval",
+				"Value" : "0 hour(s)"
+			},
+			{
+				"Property" : "Auto-Learn Mode",
+				"Value" : "Transparent"
+			}
+		]
+	}
+}
+]
+}
+

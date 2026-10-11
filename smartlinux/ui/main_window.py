@@ -21,6 +21,7 @@ from ..core.history_manager import HistoryManager
 from ..core import usb_compat
 from ..core import raid
 from ..core import system_info
+from ..core import vendor_tools
 
 from .sidebar import SidebarWidget
 from .detail_panel import DetailPanel
@@ -90,6 +91,11 @@ class MainWindow(QMainWindow):
         # when the user connects / refreshes a host (and when the local list loads), never on a timer.
         self._system_info: Dict[str, system_info.SystemInfo] = {}
         self._want_local_system_info = False
+        # perccli/storcli per host ("" = this computer) and controller PCI slot. Only filled by a
+        # user Refresh / connect, never at startup, on hotplug or on a timer.
+        self._vendor_states: Dict[str, Dict[str, vendor_tools.ControllerVendorState]] = {}
+        self._want_local_vendor = False
+        self._host_drives: Dict[str, List[DiskInfo]] = {}
 
         # Hotplug auto-detection watcher
         self._hotplug_watcher: Optional[DeviceHotplugWatcher] = None
@@ -172,7 +178,7 @@ class MainWindow(QMainWindow):
         self.sidebar.server_add_requested.connect(self._on_add_server)
         self.sidebar.server_remove_requested.connect(self._on_remove_server)
         self.sidebar.server_refresh_requested.connect(self._on_refresh_server)
-        self.sidebar.local_refresh_requested.connect(self._refresh_local_host)
+        self.sidebar.local_refresh_requested.connect(self._on_local_refresh_clicked)
         self.sidebar.eject_requested.connect(self._eject_local_disk)
         self.sidebar.host_selected.connect(self._on_host_selected)
         splitter.addWidget(self.sidebar)
@@ -191,6 +197,8 @@ class MainWindow(QMainWindow):
         self.server_panel = ServerPanel()
         self.server_panel.setObjectName("DetailContainer")
         self.server_panel.refresh_requested.connect(self._on_server_panel_refresh)
+        self.server_panel.vendor_mode_changed.connect(self._on_vendor_mode_changed)
+        self.server_panel.disk_link_requested.connect(self._on_vendor_disk_link)
         self.detail_stack.addWidget(self.server_panel)
         splitter.addWidget(self.detail_stack)
 
@@ -355,33 +363,55 @@ class MainWindow(QMainWindow):
         self._want_local_system_info = True
         self._discover_local_drives()
 
+    def _on_local_refresh_clicked(self):
+        """The user's Refresh: like startup, plus the vendor tool check / read (if chosen)."""
+        self._want_local_vendor = True
+        self._refresh_local_host()
+
     def _discover_local_drives(self):
         """Lists local drives (never reads SMART)."""
         with_system_info, self._want_local_system_info = self._want_local_system_info, False
+        with_vendor, self._want_local_vendor = self._want_local_vendor and with_system_info, False
         self.status_bar.showMessage("Detecting local storage devices...")
         self._start_worker(
             self._do_discover_local,
             on_result=self._on_local_listed,
             on_error=lambda err: self.status_bar.showMessage(f"Error enumerating local drives: {err}"),
-            with_system_info=with_system_info
+            with_system_info=with_system_info,
+            vendor_modes=self._vendor_modes() if with_vendor else None
         )
 
     @staticmethod
-    def _do_discover_local(with_system_info: bool):
+    def _vendor_modes() -> Dict[str, str]:
+        return vendor_tools.load_modes(AppSettings.get)
+
+    @staticmethod
+    def _do_discover_local(with_system_info: bool, vendor_modes: Optional[Dict[str, str]] = None):
         drives = LocalDiskDetector.discover_drives()
         info = None
+        vendor = None
         if with_system_info:
             try:
                 info = system_info.collect_local()
             except Exception as e:  # identity is a bonus: never blocks the drive list
                 print(f"Could not read local system information: {e}")
-        return drives, info
+        if info is not None and vendor_modes is not None:
+            try:
+                vendor = vendor_tools.read_host(vendor_tools.LocalHost(), info.controllers, vendor_modes, "")
+            except Exception as e:  # incl. CommandNotAllowed: never blocks the drive list
+                print(f"Vendor tool read failed: {e}")
+        return drives, info, vendor
 
     def _on_local_listed(self, result):
-        drives, info = result
+        drives, info = result[0], result[1]
+        vendor = result[2] if len(result) > 2 else None
         if info is not None:
             self._system_info[""] = info
+        if vendor is not None:
+            self._vendor_states[""] = vendor
         system_info.assign_controllers(self._system_info.get(""), drives)
+        vendor_tools.annotate_disks(self._vendor_states.get("", {}), drives)
+        self._host_drives[""] = drives
         self._on_local_drives_discovered(drives)
         if self.detail_stack.currentWidget() is self.server_panel and self.server_panel.server_id == "":
             self._on_host_selected("")
@@ -422,6 +452,10 @@ class MainWindow(QMainWindow):
         if cached.compat_read_note:
             fresh.compat_read_note = cached.compat_read_note
             fresh.model, fresh.serial, fresh.firmware = cached.model, cached.serial, cached.firmware
+        elif fresh.model == "Physical Drive" and cached.model != "Physical Drive":
+            # RAID-attached disk: the listing only knows "Physical Drive", the reading knows the disk
+            fresh.model, fresh.serial, fresh.firmware = cached.model, cached.serial, cached.firmware
+            fresh.size_bytes, fresh.size_human = cached.size_bytes, cached.size_human
 
     # ---------------- REMOTE SERVERS DISCOVERY (ON-DEMAND) ----------------
 
@@ -442,6 +476,8 @@ class MainWindow(QMainWindow):
             del self._ssh_clients[server_id]
         self._all_known_disks = {k: v for k, v in self._all_known_disks.items() if v.server_id != server_id}
         self._system_info.pop(server_id, None)
+        self._vendor_states.pop(server_id, None)
+        self._host_drives.pop(server_id, None)
         if self.server_panel.server_id == server_id:
             self.detail_stack.setCurrentWidget(self.detail_panel)
         self.status_bar.showMessage("Server removed.")
@@ -456,10 +492,11 @@ class MainWindow(QMainWindow):
             self._do_discover_remote_drives,
             on_result=lambda res: self._on_remote_server_listed(server_id, res),
             on_error=lambda err: self._on_remote_server_error(server_id, err),
-            srv=srv
+            srv=srv,
+            vendor_modes=self._vendor_modes()
         )
 
-    def _do_discover_remote_drives(self, srv: ServerConfig) -> List[DiskInfo]:
+    def _do_discover_remote_drives(self, srv: ServerConfig, vendor_modes: Optional[Dict[str, str]] = None):
         client = create_ssh_client(srv)
         self._ssh_clients[srv.id] = client
         ok, msg = client.connect(timeout=8)
@@ -472,13 +509,24 @@ class MainWindow(QMainWindow):
             info = client.collect_system_info()
         except Exception as e:  # identity is a bonus: never blocks the drive list
             print(f"Could not read system information of {srv.name}: {e}")
-        return drives, info
+        vendor = None
+        if info is not None and vendor_modes is not None:
+            try:
+                vendor = vendor_tools.read_host(client.vendor_host(), info.controllers, vendor_modes, srv.id)
+            except Exception as e:  # incl. CommandNotAllowed: never blocks the drive list
+                print(f"Vendor tool read failed on {srv.name}: {e}")
+        return drives, info, vendor
 
     def _on_remote_server_listed(self, server_id: str, result):
-        drives, info = result
+        drives, info = result[0], result[1]
+        vendor = result[2] if len(result) > 2 else None
         if info is not None:
             self._system_info[server_id] = info
+        if vendor is not None:
+            self._vendor_states[server_id] = vendor
         system_info.assign_controllers(self._system_info.get(server_id), drives)
+        vendor_tools.annotate_disks(self._vendor_states.get(server_id, {}), drives)
+        self._host_drives[server_id] = drives
         self._on_remote_drives_discovered(server_id, drives)
         if self.detail_stack.currentWidget() is self.server_panel and self.server_panel.server_id == server_id:
             self._on_host_selected(server_id)
@@ -511,14 +559,49 @@ class MainWindow(QMainWindow):
         else:
             info = self._system_info.get("")
             name = f"💻  This computer{f' ({info.hostname})' if info and info.hostname else ''}"
-        self.server_panel.display(server_id, name, self._system_info.get(server_id))
+        self.server_panel.display(server_id, name, self._system_info.get(server_id),
+                                  self._vendor_states.get(server_id))
         self.detail_stack.setCurrentWidget(self.server_panel)
 
     def _on_server_panel_refresh(self, server_id: str):
         if server_id:
             self._on_refresh_server(server_id)
         else:
-            self._refresh_local_host()
+            self._on_local_refresh_clicked()
+
+    # ---------------- VENDOR TOOL (perccli / storcli, read-only, opt-in per controller) ----------------
+
+    def _on_vendor_mode_changed(self, server_id: str, pci_slot: str, mode: str):
+        """Saves the choice. Nothing runs here: the next Refresh / connect reads the controller."""
+        modes = dict(AppSettings.get(vendor_tools.SETTINGS_KEY, {}) or {})
+        modes[vendor_tools.mode_key(server_id, pci_slot)] = mode
+        AppSettings.set(**{vendor_tools.SETTINGS_KEY: modes})
+        state = self._vendor_states.get(server_id, {}).get(pci_slot)
+        if state is not None:
+            state.mode = mode
+        drives = self._host_drives.get(server_id)
+        if drives is not None:
+            vendor_tools.annotate_disks(self._vendor_states.get(server_id, {}), drives)
+            if server_id:
+                self.sidebar.set_server_drives(server_id, drives)
+            else:
+                self.sidebar.set_local_disks(drives)
+        self._on_host_selected(server_id)
+        if mode == vendor_tools.MODE_VENDOR and not (state and state.report):
+            self.status_bar.showMessage("Vendor tool selected: click Refresh to read the controller (read-only).")
+
+    def _on_vendor_disk_link(self, server_id: str, kind: str, value: str):
+        for disk in self._host_drives.get(server_id, []):
+            if kind == "os_drive" and disk.is_virtual and disk.device_path == value:
+                break
+            if kind == "smartctl" and disk.smart_dev_type and disk.smart_dev_type.split("+")[-1] == value:
+                break
+        else:
+            self.status_bar.showMessage(f"No disk in the sidebar matches {value}.")
+            return
+        known = self._all_known_disks.get(disk.host_key, disk)
+        self.sidebar.select_disk(known)
+        self._on_disk_selected_in_sidebar(known)
 
     def _on_remote_server_error(self, server_id: str, error_msg: str):
         self.sidebar.set_server_drives(server_id, [], error=error_msg)
@@ -633,6 +716,9 @@ class MainWindow(QMainWindow):
             updated_disk.controller = updated_disk.controller or listed.controller
             if updated_disk.slot is None:
                 updated_disk.slot = listed.slot
+            updated_disk.raid_volume = listed.raid_volume
+            updated_disk.raid_detail = listed.raid_detail
+            updated_disk.raid_health = listed.raid_health
             if listed.uid != listed.device_path:
                 updated_disk.name = listed.name
         self._all_known_disks[key] = updated_disk

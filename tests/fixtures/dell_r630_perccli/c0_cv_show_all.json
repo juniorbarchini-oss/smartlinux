@@ -1,0 +1,23 @@
+{
+"Controllers":[
+{
+	"Command Status" : {
+		"CLI Version" : "007.1910.0000.0000 Oct 08, 2021",
+		"Operating system" : "Linux 7.0.14-20-pve",
+		"Controller" : 0,
+		"Status" : "Failure",
+		"Description" : "None",
+		"Detailed Status" : [
+			{
+				"Ctrl" : 0,
+				"Status" : "Failed",
+				"Property" : "-",
+				"ErrMsg" : "Cachevault doesn't exist",
+				"ErrCd" : 255
+			}
+		]
+	}
+}
+]
+}
+

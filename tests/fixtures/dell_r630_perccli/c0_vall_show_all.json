@@ -1,0 +1,243 @@
+{
+"Controllers":[
+{
+	"Command Status" : {
+		"CLI Version" : "007.1910.0000.0000 Oct 08, 2021",
+		"Operating system" : "Linux 7.0.14-20-pve",
+		"Controller" : 0,
+		"Status" : "Success",
+		"Description" : "None"
+	},
+	"Response Data" : {
+		"/c0/v0" : [
+			{
+				"DG/VD" : "0/0",
+				"TYPE" : "RAID1",
+				"State" : "Optl",
+				"Access" : "RW",
+				"Consist" : "Yes",
+				"Cache" : "RWBD",
+				"Cac" : "-",
+				"sCC" : "OFF",
+				"Size" : "1.090 TB",
+				"Name" : "SO"
+			}
+		],
+		"PDs for VD 0" : [
+			{
+				"EID:Slt" : "32:0",
+				"DID" : 0,
+				"State" : "Onln",
+				"DG" : 0,
+				"Size" : "1.090 TB",
+				"Intf" : "SAS",
+				"Med" : "HDD",
+				"SED" : "N",
+				"PI" : "N",
+				"SeSz" : "512B",
+				"Model" : "ST1200MM0088    ",
+				"Sp" : "U",
+				"Type" : "-"
+			},
+			{
+				"EID:Slt" : "32:1",
+				"DID" : 1,
+				"State" : "Onln",
+				"DG" : 0,
+				"Size" : "1.090 TB",
+				"Intf" : "SAS",
+				"Med" : "HDD",
+				"SED" : "N",
+				"PI" : "N",
+				"SeSz" : "512B",
+				"Model" : "ST1200MM0088    ",
+				"Sp" : "U",
+				"Type" : "-"
+			}
+		],
+		"VD0 Properties" : {
+			"Strip Size" : "64 KB",
+			"Number of Blocks" : 2343043072,
+			"VD has Emulated PD" : "No",
+			"Span Depth" : 1,
+			"Number of Drives Per Span" : 2,
+			"Write Cache(initial setting)" : "WriteBack",
+			"Disk Cache Policy" : "Disk's Default",
+			"Encryption" : "None",
+			"Data Protection" : "Disabled",
+			"Active Operations" : "None",
+			"Exposed to OS" : "Yes",
+			"OS Drive Name" : "/dev/sda",
+			"Creation Date" : "09-03-2026",
+			"Creation Time" : "09:15:31 AM",
+			"Emulation type" : "default",
+			"Cachebypass size" : "Cachebypass-64k",
+			"Cachebypass Mode" : "Cachebypass Intelligent",
+			"Is LD Ready for OS Requests" : "Yes",
+			"SCSI NAA Id" : "61866da0824bef0031414c331f55b793",
+			"Unmap Enabled" : "N/A"
+		},
+		"/c0/v1" : [
+			{
+				"DG/VD" : "1/1",
+				"TYPE" : "RAID0",
+				"State" : "Optl",
+				"Access" : "RW",
+				"Consist" : "Yes",
+				"Cache" : "NRWTD",
+				"Cac" : "-",
+				"sCC" : "OFF",
+				"Size" : "1.090 TB",
+				"Name" : "VMDATA1"
+			}
+		],
+		"PDs for VD 1" : [
+			{
+				"EID:Slt" : "32:2",
+				"DID" : 2,
+				"State" : "Onln",
+				"DG" : 1,
+				"Size" : "1.090 TB",
+				"Intf" : "SAS",
+				"Med" : "HDD",
+				"SED" : "N",
+				"PI" : "N",
+				"SeSz" : "512B",
+				"Model" : "ST1200MM0088    ",
+				"Sp" : "U",
+				"Type" : "-"
+			}
+		],
+		"VD1 Properties" : {
+			"Strip Size" : "64 KB",
+			"Number of Blocks" : 2343043072,
+			"VD has Emulated PD" : "No",
+			"Span Depth" : 1,
+			"Number of Drives Per Span" : 1,
+			"Write Cache(initial setting)" : "WriteThrough",
+			"Disk Cache Policy" : "Disabled",
+			"Encryption" : "None",
+			"Data Protection" : "Disabled",
+			"Active Operations" : "None",
+			"Exposed to OS" : "Yes",
+			"OS Drive Name" : "/dev/sdb",
+			"Creation Date" : "01-10-2026",
+			"Creation Time" : "04:58:45 PM",
+			"Emulation type" : "default",
+			"Cachebypass size" : "Cachebypass-64k",
+			"Cachebypass Mode" : "Cachebypass Intelligent",
+			"Is LD Ready for OS Requests" : "Yes",
+			"SCSI NAA Id" : "61866da0824bef0032514dc555e07b15",
+			"Unmap Enabled" : "N/A"
+		},
+		"/c0/v2" : [
+			{
+				"DG/VD" : "2/2",
+				"TYPE" : "RAID0",
+				"State" : "Optl",
+				"Access" : "RW",
+				"Consist" : "Yes",
+				"Cache" : "NRWTD",
+				"Cac" : "-",
+				"sCC" : "OFF",
+				"Size" : "1.090 TB",
+				"Name" : "VMDATA2"
+			}
+		],
+		"PDs for VD 2" : [
+			{
+				"EID:Slt" : "32:3",
+				"DID" : 3,
+				"State" : "Onln",
+				"DG" : 2,
+				"Size" : "1.090 TB",
+				"Intf" : "SAS",
+				"Med" : "HDD",
+				"SED" : "N",
+				"PI" : "N",
+				"SeSz" : "512B",
+				"Model" : "ST1200MM0088    ",
+				"Sp" : "U",
+				"Type" : "-"
+			}
+		],
+		"VD2 Properties" : {
+			"Strip Size" : "64 KB",
+			"Number of Blocks" : 2343043072,
+			"VD has Emulated PD" : "No",
+			"Span Depth" : 1,
+			"Number of Drives Per Span" : 1,
+			"Write Cache(initial setting)" : "WriteThrough",
+			"Disk Cache Policy" : "Disabled",
+			"Encryption" : "None",
+			"Data Protection" : "Disabled",
+			"Active Operations" : "None",
+			"Exposed to OS" : "Yes",
+			"OS Drive Name" : "/dev/sdc",
+			"Creation Date" : "01-10-2026",
+			"Creation Time" : "04:59:00 PM",
+			"Emulation type" : "default",
+			"Cachebypass size" : "Cachebypass-64k",
+			"Cachebypass Mode" : "Cachebypass Intelligent",
+			"Is LD Ready for OS Requests" : "Yes",
+			"SCSI NAA Id" : "61866da0824bef0032514dd456c3fce0",
+			"Unmap Enabled" : "N/A"
+		},
+		"/c0/v3" : [
+			{
+				"DG/VD" : "3/3",
+				"TYPE" : "RAID0",
+				"State" : "Optl",
+				"Access" : "RW",
+				"Consist" : "Yes",
+				"Cache" : "NRWTD",
+				"Cac" : "-",
+				"sCC" : "OFF",
+				"Size" : "1.090 TB",
+				"Name" : "VMDATA3"
+			}
+		],
+		"PDs for VD 3" : [
+			{
+				"EID:Slt" : "32:5",
+				"DID" : 5,
+				"State" : "Onln",
+				"DG" : 3,
+				"Size" : "1.090 TB",
+				"Intf" : "SAS",
+				"Med" : "HDD",
+				"SED" : "N",
+				"PI" : "N",
+				"SeSz" : "512B",
+				"Model" : "ST1200MM0088    ",
+				"Sp" : "U",
+				"Type" : "-"
+			}
+		],
+		"VD3 Properties" : {
+			"Strip Size" : "64 KB",
+			"Number of Blocks" : 2343043072,
+			"VD has Emulated PD" : "No",
+			"Span Depth" : 1,
+			"Number of Drives Per Span" : 1,
+			"Write Cache(initial setting)" : "WriteThrough",
+			"Disk Cache Policy" : "Disabled",
+			"Encryption" : "None",
+			"Data Protection" : "Disabled",
+			"Active Operations" : "None",
+			"Exposed to OS" : "Yes",
+			"OS Drive Name" : "/dev/sdd",
+			"Creation Date" : "01-10-2026",
+			"Creation Time" : "04:59:16 PM",
+			"Emulation type" : "default",
+			"Cachebypass size" : "Cachebypass-64k",
+			"Cachebypass Mode" : "Cachebypass Intelligent",
+			"Is LD Ready for OS Requests" : "Yes",
+			"SCSI NAA Id" : "61866da0824bef0032514de457b38923",
+			"Unmap Enabled" : "N/A"
+		}
+	}
+}
+]
+}
+

@@ -283,6 +283,47 @@ Empty slots are not listed (smartctl does not report them).
 
 ---
 
+## 🧰 Vendor tool (RAID)
+
+`smartctl` reads each physical disk behind a MegaRAID/PERC controller, but not the RAID itself. When
+Dell **perccli** or Broadcom **storcli** is **already installed**, each MegaRAID controller in the
+**Server** panel offers a read mode: **Standard read** (smartctl only, the default) or **Vendor tool**.
+The choice is saved per server and controller in `~/.config/smartlinux/settings.json` (0600).
+
+In Vendor tool mode SmartLinux also shows:
+
+- the controller (product, FW version and package, BIOS, driver, personality, controller status);
+- every volume: DG/VD, RAID type, state (Optl / Dgrd / Pdgd / OfLn), cache, size, name, the physical
+  disks it is built from, the `/dev/sdX` it appears as and active operations (rebuild, init, CC);
+  single-disk RAID0 volumes are marked "no redundancy";
+- every physical disk: state, media / other error counts, predictive failure count, SMART alert,
+  temperature and link speed. DID = the N of `smartctl -d megaraid,N`; double-click a row to open the
+  disk. The sidebar shows the volume on each disk ("sdb · VMDATA1 · RAID0 · 1 disk · no redundancy");
+- the battery (BBU): state, charge, temperature, replacement required, pack missing.
+
+Health: a volume Dgrd/Pdgd is a WARNING (redundancy lost), OfLn is FAILED; a disk Failed/Offln/UBad is
+FAILED, a predictive failure or a SMART alert is a WARNING, media errors are ATTENTION (other errors are
+informational); a battery that is not Optimal or needs replacement is a WARNING. The controller shows
+the worst of its parts. A missing component ("Cachevault doesn't exist") is not an error.
+
+Policy:
+
+- **Read-only whitelist.** Only these fixed commands run, with the controller number checked against
+  `^[0-9]{1,2}$` and no shell (over SSH the validated tokens cannot contain shell syntax):
+  `-v`, `show ctrlcount J`, `/cN show J`, `/cN show all J`, `/cN/vall show all J`,
+  `/cN/eall/sall show all J`, `/cN/bbu show all J`, `/cN/dall show J`. Anything else (set, start, stop,
+  add, del, import, clear, flash, secure, foreign, patrolread...) is refused before it runs.
+- **Fixed executables:** `perccli64`, `perccli`, `storcli64`, `storcli`,
+  `/opt/MegaRAID/perccli/perccli64`, `/opt/MegaRAID/storcli/storcli64`.
+- **SmartLinux never installs it**, locally or over SSH. If it is missing, the panel says what it adds
+  and where to get it (Dell: PERCCLI in Drivers & Downloads, category SAS RAID; Broadcom: StorCLI) and
+  how to install it by hand (`sudo dpkg -i perccli_*.deb` / `sudo rpm -ivh perccli-*.rpm`).
+- **Manual only:** it runs when you connect / refresh a server or click Refresh for this computer,
+  never at startup, on hotplug or on a timer. It needs root (or sudo for a remote user with a saved
+  password); otherwise the panel explains why it is not available.
+
+---
+
 ## 📂 Project Architecture
 
 ```text
@@ -297,6 +338,7 @@ smartlinux/
 │   │   ├── smart_parser.py     # ATA/SATA, NVMe and SAS/SCSI SMART JSON parser & threshold evaluator
 │   │   ├── raid.py             # RAID controllers: -d megaraid,N disks, virtual drive detection
 │   │   ├── system_info.py      # Read-only host identity and storage controllers (local / SSH)
+│   │   ├── vendor_tools.py     # Optional perccli/storcli reads: whitelist, detection, RAID health
 │   │   ├── ssh_client.py       # Hardened paramiko client + automatic engine selection (AutoSSHClient)
 │   │   ├── plink_client.py     # Legacy SSH engine on PuTTY plink (ssh-dss devices)
 │   │   ├── remote_common.py    # Transport-independent smartctl / discovery logic (JSON + text mode)
@@ -329,6 +371,7 @@ smartlinux/
 │   ├── test_legacy_ssh_engine.py   # plink engine and paramiko→plink automatic selection
 │   ├── test_usb_compat*.py         # USB compatibility mode on a fake sysfs (detection, guards, flow, UI)
 │   ├── test_megaraid*.py           # Dell R630 / PERC H730 captures: discovery, SAS health, server info, UI
+│   ├── test_vendor_tools*.py       # perccli captures: whitelist, detection, RAID health, Vendor tool UI
 │   └── test_usb_mode_helper.py     # Root helper: argument checks, quirks editing, idempotence
 ├── smartlinux.sh               # One-click launcher script
 ├── install.sh                  # System desktop & icon installer

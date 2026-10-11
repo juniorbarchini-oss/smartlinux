@@ -267,3 +267,51 @@ def test_restore_refuses_while_a_volume_was_remounted(helper, fake_sysfs, tmp_pa
     # once unmounted, restore works
     _isolated_mountinfo.write_text("")
     assert "restored" in run(helper, fs, tmp_path / "state", "restore", kernel)
+
+
+
+# ---------------------------------------------------------------- empty list must really be written
+
+def test_write_quirks_always_issues_a_write_even_for_an_empty_list(helper, fake_sysfs, monkeypatch):
+    """Regression: write("") does nothing on a sysfs attribute, so the quirk stayed forced."""
+    fs = fake_sysfs()
+    helper.write_quirks(fs.root, ["0bc2:a020:u"])
+    raw_writes = []
+    real_open = open
+
+    class Spy:
+        def __init__(self, f):
+            self.f = f
+
+        def write(self, data):
+            raw_writes.append(data)
+            return self.f.write(data)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            self.f.close()
+
+        def __getattr__(self, name):
+            return getattr(self.f, name)
+
+    def spying_open(path, mode="r", *a, **k):
+        f = real_open(path, mode, *a, **k)
+        return Spy(f) if "w" in mode and str(path).endswith("parameters/quirks") else f
+
+    monkeypatch.setattr("builtins.open", spying_open)
+    helper.write_quirks(fs.root, [])
+    assert raw_writes and all(len(w) > 0 for w in raw_writes)
+    assert helper.read_quirks(fs.root) == []
+
+
+def test_write_quirks_fails_loudly_when_the_kernel_ignores_the_change(helper, fake_sysfs, monkeypatch):
+    fs = fake_sysfs()
+    helper.write_quirks(fs.root, ["0bc2:a020:u"])
+    real_parse = helper.parse_quirks
+    # simulate a parameter that keeps its old value
+    monkeypatch.setattr(helper, "parse_quirks", lambda text: ["0bc2:a020:u"])
+    with pytest.raises(helper.HelperError):
+        helper.write_quirks(fs.root, [])
+    monkeypatch.setattr(helper, "parse_quirks", real_parse)

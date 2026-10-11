@@ -131,11 +131,21 @@ def read_quirks(sysfs):
 
 
 def write_quirks(sysfs, entries):
+    """Writes the whole list, then reads it back: the change must really be applied.
+
+    A trailing newline is mandatory: with an empty list a bare write("") issues no write(2)
+    at all, the module parameter keeps its old value and the Bulk-Only quirk would stay
+    forced (observed live: restore timed out waiting for the adapter to come back on uas).
+    """
+    wanted = format_quirks(entries)
     try:
         with open(quirks_path(sysfs), "w", encoding="ascii") as f:
-            f.write(format_quirks(entries))
+            f.write(wanted + "\n")
     except OSError as e:
         raise HelperError(f"could not write usb-storage quirks: {e}")
+    actual = format_quirks(parse_quirks(open(quirks_path(sysfs), encoding="ascii").read()))
+    if actual.lower() != wanted.lower():
+        raise HelperError(f"usb-storage quirks did not change as requested (now: {actual!r})")
 
 
 # ---------------------------------------------------------------- sysfs device

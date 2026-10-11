@@ -12,7 +12,7 @@ optdepends=('putty: SSH to very old devices that only offer ssh-dss host keys'
             'udisks2: unmount/remount volumes for the USB compatibility mode'
             'lsof: show which programs keep a USB volume busy')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')  # replaced with the real checksum right after the v1.2.0 tag exists
+sha256sums=('ae3f31a4d73f3e545be2ec63e43ebd12ed5150ee57fcfd7c0e8cba63da2ac0b2')
 
 package() {
   cd "$pkgname-$pkgver"

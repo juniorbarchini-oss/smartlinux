@@ -1,3 +1,5 @@
+import contextlib
+import logging
 import os
 import re
 from typing import Optional, Tuple, Dict, Any
@@ -18,6 +20,29 @@ _LEGACY_NEGOTIATION_RE = re.compile(
     r"|unable to (negotiate|agree)|no matching (key exchange|cipher|mac|kex)|negotiation failed",
     re.I,
 )
+
+
+class _DropRecords(logging.Filter):
+    def filter(self, record):  # noqa: A003
+        return False
+
+
+@contextlib.contextmanager
+def _quiet_paramiko_transport():
+    """Mute paramiko's transport thread while we connect.
+
+    When a device offers only algorithms paramiko cannot negotiate (e.g. ssh-dss), the
+    transport thread dumps a full traceback to stderr even though connect() reports the
+    failure cleanly and AutoSSHClient retries with plink. The error is still returned
+    to the caller as an exception; only the duplicate log noise is dropped.
+    """
+    log = logging.getLogger("paramiko.transport")
+    flt = _DropRecords()
+    log.addFilter(flt)
+    try:
+        yield
+    finally:
+        log.removeFilter(flt)
 
 
 def is_legacy_negotiation_error(message: str) -> bool:
@@ -151,7 +176,8 @@ class RemoteSSHClient(BaseRemoteClient):
                 connect_kwargs["password"] = self.config.password
                 connect_kwargs["look_for_keys"] = False
 
-            self._client.connect(**connect_kwargs)
+            with _quiet_paramiko_transport():
+                self._client.connect(**connect_kwargs)
             self._detect_os()
             return True, "Connected successfully"
         except paramiko.BadHostKeyException as e:

@@ -323,3 +323,15 @@ def test_server_config_roundtrip_keeps_legacy_flag():
     c = cfg(legacy_ssh=True)
     assert ServerConfig.from_dict(c.to_dict()).legacy_ssh is True
     assert ServerConfig.from_dict({"id": "x", "host": "h"}).legacy_ssh is False
+
+
+def test_quiet_paramiko_transport_drops_and_restores_logging(caplog):
+    import logging
+    from smartlinux.core.ssh_client import _quiet_paramiko_transport
+    log = logging.getLogger("paramiko.transport")
+    with caplog.at_level(logging.ERROR, logger="paramiko.transport"):
+        with _quiet_paramiko_transport():
+            log.error("Exception (client): Incompatible ssh peer (no acceptable host key)")
+        assert not caplog.records
+        log.error("after")
+        assert [r.getMessage() for r in caplog.records] == ["after"]

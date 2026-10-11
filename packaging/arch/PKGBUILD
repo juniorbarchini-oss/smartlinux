@@ -1,6 +1,6 @@
 # Maintainer: juniorbarchini-oss <juniorbarchini-oss@users.noreply.github.com>
 pkgname=smartlinux
-_tag=1.3.0-beta.2          # git tag version (the release tag is v$_tag)
+_tag=1.3.0-beta.3          # git tag version (the release tag is v$_tag)
 pkgver=${_tag//-/}         # pkgver may not contain hyphens: 1.3.0beta.1 sorts before 1.3.0
 pkgrel=1
 pkgdesc="S.M.A.R.T. disk health diagnostics for local and remote (SSH) drives"
@@ -13,7 +13,7 @@ optdepends=('putty: SSH to very old devices that only offer ssh-dss host keys'
             'udisks2: unmount/remount volumes for the USB compatibility mode'
             'lsof: show which programs keep a USB volume busy')
 source=("$pkgname-$_tag.tar.gz::$url/archive/refs/tags/v$_tag.tar.gz")
-sha256sums=('88fd1bd0335c46e3b4d2f278dffec6efa66ae44dfa92181ba8b7661b1fc4055e')
+sha256sums=('SKIP')  # replaced with the real checksum right after the tag exists
 
 package() {
   cd "$pkgname-$_tag"

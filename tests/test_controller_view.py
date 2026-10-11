@@ -10,6 +10,7 @@ import pytest
 QtWidgets = pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)  # no Qt libs: skip
 
 from smartlinux.core import controller as ctl  # noqa: E402
+from smartlinux.core import controller_report  # noqa: E402
 from smartlinux.core import system_info, vendor_tools as vt  # noqa: E402
 from smartlinux.core.models import DiskInfo  # noqa: E402
 from smartlinux.core.smart_parser import SmartParser  # noqa: E402
@@ -339,3 +340,72 @@ def test_a_physical_disk_still_opens_its_own_view(env):
     phys = next(d for d in win._all_known_disks.values() if not d.is_virtual and d.slot == 2)
     win._on_disk_selected_in_sidebar(phys)
     assert win.detail_stack.currentWidget() is win.detail_panel
+
+
+# ---------------------------------------------------------------- export report from the controller
+
+def scanned_window(env):
+    win = env.mw.MainWindow()
+    view = open_controller(win)
+    win.controller_view.scan_requested.emit("", LABEL)
+    return win, view
+
+
+def test_export_button_opens_the_controller_report_dialog(env, monkeypatch, tmp_path):
+    seen = {}
+
+    class FakeDialog:
+        exported_files = []
+
+        def __init__(self, document, base_name, parent=None):
+            seen["document"], seen["base"] = document, base_name
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(env.mw, "ControllerExportDialog", FakeDialog)
+    win, view = scanned_window(env)
+    assert view.export_btn.isEnabled()
+    view.export_btn.click()
+    doc = seen["document"]
+    assert doc.title.startswith("RAID controller report")
+    headings = [b.text for b in doc.blocks if isinstance(b, controller_report.Heading) and b.level == 2]
+    assert headings[:3] == ["1. Equipment", "2. Diagnosis", "3. Volumes"]
+    assert "7. What was read, and how" in headings
+
+
+def test_controller_report_findings_carry_their_evidence(env, tmp_path):
+    win, view = scanned_window(env)
+    group = ctl.group_by_controller(win._current_disks(""))[LABEL]
+    state = win._controller_state("", LABEL)
+    doc = controller_report.build_report(LABEL, "R630", group.physical, group.virtual, report=state.report,
+                                         tool=state.tool, last_scan=1_700_000_000, version="x")
+    findings = [b for b in doc.blocks if isinstance(b, controller_report.Finding)]
+    for f in findings:
+        assert f.title and f.what and f.why and f.source          # every finding explains itself
+    md = controller_report.to_markdown(doc)
+    page = controller_report.to_html(doc)
+    for text in (md, page):
+        assert "Equipment" in text and "Physical disks" in text and "does not predict failures" in text
+    preview = os.environ.get("SMARTLINUX_PREVIEW_DIR")
+    if preview:                                                    # manual look at the real layout
+        ok, paths = controller_report.export_files(doc, preview, ["pdf", "html", "md"], "r630")
+        assert ok, paths
+
+
+def test_controller_report_without_a_scan_says_so(env):
+    win = env.mw.MainWindow()
+    group = ctl.group_by_controller(win._current_disks(""))[LABEL]
+    doc = controller_report.build_report(LABEL, "R630", group.physical, group.virtual)
+    verdict = next(b for b in doc.blocks if isinstance(b, controller_report.Verdict))
+    assert "not been scanned" in verdict.headline
+    assert not any(isinstance(b, controller_report.Finding) for b in doc.blocks)
+
+
+def test_controller_export_is_disabled_while_a_scan_runs(env):
+    win = env.mw.MainWindow()
+    view = open_controller(win)
+    view.set_busy(True)
+    assert not view.export_btn.isEnabled()
+    view.set_busy(False)
+    assert view.export_btn.isEnabled()

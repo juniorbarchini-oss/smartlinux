@@ -13,7 +13,8 @@ from ..core.exporter import ReportExporter
 class ExportDialog(QDialog):
     """Interactive dialog to select disks, format (.md, .pdf, .doc, .xls), and destination folder."""
 
-    def __init__(self, available_disks: List[DiskInfo], selected_disk: Optional[DiskInfo] = None, parent=None):
+    def __init__(self, available_disks: List[DiskInfo], selected_disk: Optional[DiskInfo] = None, parent=None,
+                 preselected: Optional[List[DiskInfo]] = None):
         super().__init__(parent)
         self.setWindowTitle("Export S.M.A.R.T. Reports")
         self.setMinimumWidth(560)
@@ -21,6 +22,8 @@ class ExportDialog(QDialog):
 
         self.available_disks = available_disks
         self.selected_disk = selected_disk
+        # exactly these drives start checked (the disks of one RAID controller); None = default rule
+        self.preselected = preselected
         self.exported_files: List[str] = []
 
         self._setup_ui()
@@ -74,7 +77,10 @@ class ExportDialog(QDialog):
             item.setText(f"{host_tag}{disk.display_path} • {disk.model} ({disk.size_human}) — {status_tag}")
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             
-            if self.selected_disk and disk.uid == self.selected_disk.uid and disk.server_id == self.selected_disk.server_id:
+            if self.preselected is not None:
+                same = any(d.uid == disk.uid and d.server_id == disk.server_id for d in self.preselected)
+                item.setCheckState(Qt.Checked if same else Qt.Unchecked)
+            elif self.selected_disk and disk.uid == self.selected_disk.uid and disk.server_id == self.selected_disk.server_id:
                 item.setCheckState(Qt.Checked)
             elif len(self.available_disks) == 1 or len(disk.attributes) > 0:
                 item.setCheckState(Qt.Checked)

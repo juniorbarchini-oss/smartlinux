@@ -423,6 +423,7 @@ def run_compat_read(candidate: UasCandidate,
     restored = False
     remount_warnings: List[str] = []
     final_block: Optional[str] = None
+    bot_block: Optional[str] = None
     try:
         progress("Asking for administrator permission...")
         helper_may_have_run = True
@@ -435,6 +436,7 @@ def run_compat_read(candidate: UasCandidate,
 
         progress("Waiting for the drive to reconnect in compatibility mode...")
         block = _wait_for_block(sysfs_root, candidate, sleep, clock, node_timeout)
+        bot_block = block
         if not block:
             raise CompatModeError("The drive did not reappear after switching modes.")
 
@@ -443,6 +445,10 @@ def run_compat_read(candidate: UasCandidate,
     except Exception as e:
         failure = e
     finally:
+        if bot_block:
+            # The desktop may have auto-mounted the drive under its temporary node: never
+            # re-attach the port under a mounted filesystem.
+            remount_warnings.extend(_unmount_all(f"/dev/{bot_block}", runner, progress))
         if helper_may_have_run:
             progress("Restoring normal (UAS) mode...")
             try:
@@ -461,7 +467,7 @@ def run_compat_read(candidate: UasCandidate,
             restored = True
         if unmounted:
             progress("Mounting the volumes again...")
-            remount_warnings = _remount(unmounted, runner, sleep, clock, remount_timeout, automount_grace)
+            remount_warnings.extend(_remount(unmounted, runner, sleep, clock, remount_timeout, automount_grace))
 
     if failure is not None:
         msg = str(failure)
@@ -479,6 +485,22 @@ def run_compat_read(candidate: UasCandidate,
     disk.compat_read_note = compat_note(now(), restored)
     return CompatReadResult(disk=disk, restored=restored, restore_error=restore_error,
                             remount_warnings=remount_warnings)
+
+
+def _unmount_all(device_path: str, runner: Runner, progress) -> List[str]:
+    try:  # runs right before restore: must never raise
+        volumes = list_volumes(device_path, runner)
+    except Exception as e:
+        return [f"Could not check {device_path} for automatic mounts: {e}"]
+    warnings = []
+    for v in volumes:
+        if v.is_mounted:
+            progress(f"Unmounting {v.describe()} (mounted automatically)...")
+            res = runner(["udisksctl", "unmount", "-b", v.path], 30)
+            if res.returncode != 0:
+                warnings.append(f"Could not unmount {v.path} before restoring normal mode: "
+                                f"{(res.stderr or res.stdout).strip()}")
+    return warnings
 
 
 def _wait_for_block(sysfs_root, candidate, sleep, clock, timeout) -> Optional[str]:

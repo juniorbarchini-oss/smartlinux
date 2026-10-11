@@ -55,7 +55,8 @@ class FakeRunner:
         self.fs = fs
         self.tree = tree or lsblk_tree()
         self.tran = tran
-        self.mounted = set()
+        self.mounted = set()      # UUIDs mounted again (findmnt)
+        self.unmounted = set()    # device paths unmounted (lsblk then shows no mountpoint)
         self.handlers = {}
 
     def on(self, *prefix, fn):
@@ -74,12 +75,18 @@ class FakeRunner:
         if name == "lsblk" and "TRAN" in cmd:
             return CmdResult(0, self.tran + "\n")
         if name == "lsblk":
-            return CmdResult(0, self.tree)
+            data = json.loads(self.tree)
+            for child in data["blockdevices"][0].get("children", []):
+                if child.get("path") in self.unmounted:
+                    child["mountpoint"] = None
+            return CmdResult(0, json.dumps(data))
         if name == "lsof":
             return CmdResult(1, "")
         if name == "udisksctl":
             if cmd[1] == "mount":
                 self.mounted.add(cmd[-1].rsplit("/", 1)[-1])
+            else:
+                self.unmounted.add(cmd[-1])
             return CmdResult(0, "")
         if name == "findmnt":
             uuid = cmd[-1].split("=", 1)[1]
@@ -443,6 +450,38 @@ def test_unmount_failure_remounts_and_never_calls_helper(fake_sysfs):
     with pytest.raises(CompatModeError, match="target is busy"):
         flow(fs, runner)
     assert runner.names() == ["unmount /dev/sda1", "unmount /dev/sda2", f"mount /dev/disk/by-uuid/{UUID1}"]
+
+
+def test_automount_in_bulk_only_mode_is_unmounted_before_restore(fake_sysfs):
+    fs = fake_sysfs()
+    runner = FakeRunner(fs)
+
+    def set_bot_and_desktop_automounts(cmd):
+        fs.set_driver("usb-storage")
+        fs.set_block("sdb")
+        runner.unmounted.clear()  # the desktop mounted the partitions again
+        return CmdResult(0)
+
+    runner.on("pkexec", "/usr/lib/smartlinux/usb-mode-helper", "set-bot", fn=set_bot_and_desktop_automounts)
+    flow(fs, runner)
+    names = runner.names()
+    assert names[:3] == ["unmount /dev/sda1", "unmount /dev/sda2", "set-bot"]
+    assert names[3:6] == ["unmount /dev/sda1", "unmount /dev/sda2", "restore"]
+
+
+def test_automount_check_never_blocks_restore(fake_sysfs):
+    fs = fake_sysfs()
+    runner = FakeRunner(fs)
+    state = {"n": 0}
+
+    def flaky_lsblk(cmd):
+        state["n"] += 1
+        return CmdResult(0, runner.tree) if state["n"] == 1 else CmdResult(0, "not json")
+
+    runner.on("lsblk", "-J", fn=flaky_lsblk)
+    result, _ = flow(fs, runner)
+    assert "restore" in runner.names() and result.restored
+    assert any("automatic mounts" in w for w in result.remount_warnings)
 
 
 def test_desktop_automount_is_respected(fake_sysfs):

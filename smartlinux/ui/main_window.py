@@ -918,6 +918,7 @@ class MainWindow(QMainWindow):
             updated_disk.raid_volume = listed.raid_volume
             updated_disk.raid_detail = listed.raid_detail
             updated_disk.raid_health = listed.raid_health
+            updated_disk.vendor_media_errors = listed.vendor_media_errors
             if listed.uid != listed.device_path:
                 updated_disk.name = listed.name
         self._all_known_disks[key] = updated_disk

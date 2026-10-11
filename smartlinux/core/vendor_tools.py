@@ -427,6 +427,9 @@ class VendorController:
     errors: List[str] = field(default_factory=list)
     level: int = OK
     reasons: List[str] = field(default_factory=list)
+    # "Response Data" of each successful read ("show_all", "volumes", "battery"...), kept so the
+    # Maintenance tab can show more of what was already read. Never a new command.
+    raw: Dict[str, dict] = field(default_factory=dict)
 
     @property
     def health(self) -> HealthStatus:
@@ -678,6 +681,8 @@ def read_controller(host: ToolHost, status: ToolStatus, index: int) -> VendorCon
         reply = parse_reply(out)
         if not reply.ok and not reply.message:
             reply.message = (err or "").strip()
+        if reply.ok:
+            c.raw[kind] = reply.data
         return reply
 
     show = read("show")
@@ -786,6 +791,7 @@ def annotate_disks(states: Dict[str, ControllerVendorState], disks: List[DiskInf
         disk.raid_volume = None
         disk.raid_detail = None
         disk.raid_health = None
+        disk.vendor_media_errors = None
     reports = [s.report for s in states.values() if s.mode == MODE_VENDOR and s.report]
     for report in reports:
         by_os = {v.os_drive: v for v in report.volumes if v.os_drive}
@@ -814,6 +820,7 @@ def annotate_disks(states: Dict[str, ControllerVendorState], disks: List[DiskInf
                                     + (f" · volume {vol.name or vol.dg_vd} ({vol.raid_type})" if vol else "")
                                     + f" · {counters}")
                 disk.raid_health = LEVEL_HEALTH[d.level]
+                disk.vendor_media_errors = d.media_errors
 
 
 def load_modes(settings_get: Callable[[str, object], object]) -> Dict[str, str]:

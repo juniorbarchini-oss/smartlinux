@@ -18,6 +18,32 @@ TRACKED_ATA_ATTR_NAMES = {
 }
 NVME_WEAR_ATTR_NAME = "percentage used (wear)"
 
+# Optional fields (added later; older lines simply do not have them, readers use .get()):
+#   grown_defects       SAS "Grown Defect List"
+#   uncorrected_errors  SAS read + write + verify uncorrected errors, ATA Reported_Uncorrect
+#   media_errors        vendor tool (perccli/storcli) "Media Error Count"
+SAS_GROWN_DEFECTS = "grown defect list"
+SAS_UNCORRECTED = ("read errors uncorrected", "write errors uncorrected", "verify errors uncorrected")
+ATA_UNCORRECTED = "reported_uncorrect"
+
+
+def _optional_fields(disk: DiskInfo, attr_raw_by_name: Dict[str, Any]) -> Dict[str, Any]:
+    fields: Dict[str, Any] = {}
+    grown = _to_number(attr_raw_by_name.get(SAS_GROWN_DEFECTS))
+    if grown is not None:
+        fields["grown_defects"] = grown
+    sas = [_to_number(str(attr_raw_by_name[n]).replace(",", "")) for n in SAS_UNCORRECTED if n in attr_raw_by_name]
+    sas = [v for v in sas if v is not None]
+    if sas:
+        fields["uncorrected_errors"] = sum(sas)
+    else:
+        ata = _to_number(attr_raw_by_name.get(ATA_UNCORRECTED))
+        if ata is not None:
+            fields["uncorrected_errors"] = ata
+    if getattr(disk, "vendor_media_errors", None) is not None:
+        fields["media_errors"] = disk.vendor_media_errors
+    return fields
+
 
 def _to_number(raw: Any) -> Optional[float]:
     """Extracts a leading number from a smartctl raw value (e.g. '32', '5%', '2 (Average 19)')."""
@@ -69,6 +95,7 @@ class HistoryManager:
         for attr_name, field_name in TRACKED_ATA_ATTR_NAMES.items():
             snapshot[field_name] = _to_number(attr_raw_by_name.get(attr_name))
         snapshot["nvme_wear_pct"] = _to_number(attr_raw_by_name.get(NVME_WEAR_ATTR_NAME))
+        snapshot.update(_optional_fields(disk, attr_raw_by_name))
 
         try:
             with open(HISTORY_FILE, "a", encoding="utf-8") as f:

@@ -30,6 +30,7 @@ def test_real_seagate_mobile_drive_is_decoded():
     assert _attr(disk, 1).raw.startswith("0 errors / 126,256,062 reads")
     assert _attr(disk, 7).raw.startswith("46 errors / ")
     assert _attr(disk, 188).raw == "7"
+    assert _attr(disk, 188).status == "OK"          # 7 timeouts is below the attention threshold
     # the genuine problems are still reported
     assert _attr(disk, 5).status_type == HealthStatus.WARNING
     assert _attr(disk, 187).status_type == HealthStatus.WARNING or _attr(disk, 187).status == "ATTENTION"
@@ -66,3 +67,30 @@ def test_vendor_detection_from_model_name_prefix():
     assert detect_raw_vendor({"model_name": "ST4000DM004-2CV104"}) == "seagate"
     assert detect_raw_vendor({"model_name": "WDC WD30EFRX-68EUZN0"}) is None
     assert detect_raw_vendor({"model_family": "Seagate Barracuda 7200.14"}) == "seagate"
+
+
+def _with_command_timeouts(count):
+    data = copy.deepcopy(_load("seagate_st2000lm007", "smartctl_j_a.json"))
+    for item in data["ata_smart_attributes"]["table"]:
+        if item["id"] == 188:
+            item["raw"]["value"] = (3 << 32) | count
+            item["raw"]["string"] = str((3 << 32) | count)
+    return _attr(SmartParser.parse_smart_json(data, "/dev/sdb"), 188)
+
+
+def test_command_timeouts_flag_attention_only_from_ten():
+    assert _with_command_timeouts(9).status == "OK"
+    assert _with_command_timeouts(10).status == "ATTENTION"
+    assert _with_command_timeouts(250).status == "ATTENTION"
+
+
+def test_other_vendors_use_the_same_threshold_on_the_plain_count():
+    data = copy.deepcopy(_load("usb_dji_fly_drive_bot", "smartctl_j_a_sat.json"))
+    table = data["ata_smart_attributes"]["table"]
+    sample = dict(table[0])
+    sample.update({"id": 188, "name": "Command_Timeout", "raw": {"value": 3, "string": "3"},
+                   "value": 100, "worst": 100, "thresh": 0})
+    table.append(sample)
+    assert _attr(SmartParser.parse_smart_json(data, "/dev/sdb"), 188).status == "OK"
+    sample["raw"] = {"value": 12, "string": "12"}
+    assert _attr(SmartParser.parse_smart_json(data, "/dev/sdb"), 188).status == "ATTENTION"

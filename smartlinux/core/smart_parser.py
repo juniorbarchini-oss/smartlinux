@@ -51,6 +51,11 @@ def reading_quality(data: Dict[str, Any]) -> int:
     return 0
 
 
+# A handful of command timeouts is normal on USB-bridged drives (cable, bus power, adapter
+# resets); only a sustained count is worth flagging.
+COMMAND_TIMEOUT_ATTENTION_MIN = 10
+
+
 def reading_rank(quality: int, size_bytes: int) -> tuple:
     """Orders candidate readings of one drive: a reading that identifies the drive
     (it reports a capacity) always beats one that does not, then richer telemetry wins.
@@ -282,7 +287,8 @@ class SmartParser:
                 status_str = "WARNING"
                 has_warning = True
                 warning_reasons.append(f"{name}: {raw_str}")
-            elif attr_id in (187, 188) and raw_val > 0:
+            elif (attr_id == 187 and raw_val > 0) or \
+                    (attr_id == 188 and raw_val >= COMMAND_TIMEOUT_ATTENTION_MIN):
                 status_type = HealthStatus.WARNING
                 status_str = "ATTENTION"
                 has_warning = True

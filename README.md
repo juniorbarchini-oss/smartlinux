@@ -324,6 +324,51 @@ Policy:
 
 ---
 
+## 📦 Diagnostic bundle
+
+When SmartLinux does not understand a machine (an HP, Lenovo or Dell server, a RAID card, a USB
+bridge), its owner can collect real output for the developer, with no remote access. In the
+**Server** panel (this computer or any server) click **Export diagnostic bundle…**:
+
+1. The dialog lists **exactly** which commands will run. All of them are read-only, from a fixed
+   list: `/etc/os-release`, `uname -srm`, `lsblk -J -d -o NAME,PATH,MODEL,SIZE,TYPE,TRAN,ROTA,SERIAL,VENDOR,WWN`,
+   `lspci -vmm -nn`, `smartctl --version`, `smartctl --scan` (JSON and text), `/sys/class/dmi/id/*`
+   (vendor, product, BIOS, board, chassis type), `dmidecode -t system -t bios` (only if already root),
+   `lscpu`, `MemTotal` from `/proc/meminfo`, `/sys/class/scsi_host/*/proc_name`, `modinfo` (version and
+   description only) of megaraid_sas, hpsa, smartpqi, aacraid, mpt3sas and nvme; for each disk the
+   same SMART read the app uses (`smartctl -j -a` with its `-d` type, text `-a` on old smartctl, only
+   `smartctl -i` for RAID virtual drives); and perccli / storcli **only if already installed**, through
+   the Vendor tool whitelist.
+2. Nothing runs until you click **Collect and preview** (it runs in the background, with Cancel). Each
+   command has a 30 s timeout and a 2 MB output limit (truncated outputs are marked); a missing tool
+   (e.g. on BusyBox) is recorded and the bundle goes on. Nothing is written on the inspected system and
+   nothing is installed.
+3. You see the **sanitized** files before anything is saved, then **Save as…** writes
+   `smartlinux-diag-YYYY-MM-DD-<model>.zip` (no host name in the file name).
+
+The zip contains `README.txt`, `MANIFEST.json` (command, exit code, duration, file, sha256, truncated),
+`app_view.json` (SmartLinux version, SSH engine, how the app classified each disk, its health and the
+controllers) and one file per command.
+
+**Privacy.** SmartLinux sends nothing and opens no connection of its own: it only saves a local file.
+Before saving, personal values are replaced by **consistent fake values** (the same serial always gets
+the same fake serial, so files still match each other):
+
+- serial numbers (smartctl, lsblk, dmidecode, vendor tool `SN`), WWN / SAS addresses / logical unit ids
+  and NAA ids, UUIDs, service tags / SKU numbers and asset tags, MAC addresses, IPv4 / IPv6 addresses,
+  host and server names (every occurrence), filesystem labels and RAID volume names, user names in
+  paths (`/home/<user>`, `/run/media/<user>`); SCSI inquiry data (which embeds serials) is removed.
+- **Kept**, because they are needed to fix bugs: models, vendors, firmware and software versions,
+  smartctl `-d` types, sizes and SMART counters. Placeholders ("Not Specified", "0000…") and values
+  shorter than 3 characters are not treated as personal.
+- **Defense in depth:** after sanitizing, SmartLinux searches every output file (and the file name) for
+  every original value it replaced, including serials hex-encoded. If any is left, the export stops
+  with a message and **no zip is written**. The manifest only counts replacements per category; the
+  original values are never stored.
+- The bundle never contains passwords, keys or the contents of any disk.
+
+---
+
 ## 📂 Project Architecture
 
 ```text
@@ -339,6 +384,8 @@ smartlinux/
 │   │   ├── raid.py             # RAID controllers: -d megaraid,N disks, virtual drive detection
 │   │   ├── system_info.py      # Read-only host identity and storage controllers (local / SSH)
 │   │   ├── vendor_tools.py     # Optional perccli/storcli reads: whitelist, detection, RAID health
+│   │   ├── diagnostics.py      # Diagnostic bundle: fixed read-only commands, manifest, zip
+│   │   ├── sanitizer.py        # Consistent fake values for personal data + residue check
 │   │   ├── ssh_client.py       # Hardened paramiko client + automatic engine selection (AutoSSHClient)
 │   │   ├── plink_client.py     # Legacy SSH engine on PuTTY plink (ssh-dss devices)
 │   │   ├── remote_common.py    # Transport-independent smartctl / discovery logic (JSON + text mode)
@@ -353,6 +400,7 @@ smartlinux/
 │   │   ├── sidebar.py          # Device tree with health badges and context menus
 │   │   ├── detail_panel.py     # Telemetry metric cards, self-test actions and attribute table
 │   │   ├── server_panel.py     # Server identity card and storage controller table
+│   │   ├── diagnostic_dialog.py # Export diagnostic bundle: command list, sanitized preview, Save as
 │   │   ├── history_tab.py      # Historical SMART attribute delta and degradation viewer
 │   │   ├── server_dialog.py    # Remote SSH server configuration & host key approval modal
 │   │   ├── export_dialog.py    # Multi-disk and multi-format export dialog
@@ -372,6 +420,8 @@ smartlinux/
 │   ├── test_usb_compat*.py         # USB compatibility mode on a fake sysfs (detection, guards, flow, UI)
 │   ├── test_megaraid*.py           # Dell R630 / PERC H730 captures: discovery, SAS health, server info, UI
 │   ├── test_vendor_tools*.py       # perccli captures: whitelist, detection, RAID health, Vendor tool UI
+│   ├── test_sanitizer.py           # Synthetic personal values: replaced, consistent, residue check
+│   ├── test_diagnostic*.py         # Bundle whitelist, R630 replay, zip / manifest, size cap, dialog
 │   └── test_usb_mode_helper.py     # Root helper: argument checks, quirks editing, idempotence
 ├── smartlinux.sh               # One-click launcher script
 ├── install.sh                  # System desktop & icon installer

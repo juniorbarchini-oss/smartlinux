@@ -334,11 +334,25 @@ class ControllerView(QWidget):
         self.set_busy(self._busy)
 
     def _fill_volumes(self, report):
-        has = bool(report and report.volumes)
+        """Volumes from the vendor tool; before it was read, the virtual drives the system lists
+        (name, size), so a volume the user clicked in the sidebar is always found here."""
+        has_report = bool(report and report.volumes)
+        listed = [] if has_report else list(self.virtual)
+        has = has_report or bool(listed)
         self.volumes_caption.setVisible(has)
         self.volumes_table.setVisible(has)
         self.volumes_table.setRowCount(0)
         if not has:
+            return
+        if not has_report:
+            self.volumes_table.setRowCount(len(listed))
+            for r, disk in enumerate(listed):
+                values = [disk.device_path, "—", "Not read yet", disk.size_human or "—", disk.device_path, "—",
+                          "Click Scan controller to read the RAID state"]
+                for c, value in enumerate(values):
+                    self.volumes_table.setItem(r, c, QTableWidgetItem(value))
+            _fit_height(self.volumes_table)
+            self._apply_highlight()
             return
         self.volumes_table.setRowCount(len(report.volumes))
         for r, v in enumerate(report.volumes):
@@ -357,6 +371,27 @@ class ControllerView(QWidget):
                     item.setToolTip("RAID0 of a single disk: no redundancy. This can be a deliberate design.")
                 self.volumes_table.setItem(r, c, item)
         _fit_height(self.volumes_table)
+        self._apply_highlight()
+
+    def highlight_volume(self, device_path: Optional[str]):
+        """Selects the row of the volume the OS knows as ``device_path`` (e.g. /dev/sdb) and shows
+        the Overview tab. Used when a virtual drive is clicked in the sidebar: a volume is not a
+        disk, so its information lives here and not in the (physical) disk view."""
+        self._highlight = device_path
+        self.tabs.setCurrentIndex(0)
+        self._apply_highlight()
+
+    def _apply_highlight(self):
+        target = getattr(self, "_highlight", None)
+        self.volumes_table.clearSelection()
+        if not target:
+            return
+        for r in range(self.volumes_table.rowCount()):
+            item = self.volumes_table.item(r, 4)            # "OS device" column
+            if item and item.text() == target:
+                self.volumes_table.selectRow(r)
+                self.volumes_table.scrollToItem(item)
+                return
 
     def _vendor_drive(self, report, disk: DiskInfo):
         if not report:

@@ -27,6 +27,7 @@ import sys
 import time
 
 SYSFS = "/sys"
+MOUNTINFO = "/proc/self/mountinfo"
 STATE_DIR = "/run/smartlinux"
 WAIT_TIMEOUT = 60.0
 
@@ -43,6 +44,7 @@ EXIT_ERROR = 1
 EXIT_USAGE = 2
 EXIT_INVALID_DEVICE = 3
 EXIT_TIMEOUT = 4
+EXIT_BUSY = 5
 
 
 class HelperError(Exception):
@@ -186,6 +188,62 @@ def has_block_device(sysfs, busid):
     return bool(glob.glob(pattern))
 
 
+def disk_identities(sysfs, busid):
+    """Device numbers ('8:16') and /dev paths of the USB device's disks and partitions."""
+    dev = usb_device_dir(sysfs, busid)
+    pattern = os.path.join(glob.escape(dev), f"{busid}:*", "host*", "target*", "*", "block", "*")
+    numbers, paths = set(), set()
+    for blk in glob.glob(pattern):
+        name = os.path.basename(blk)
+        paths.add(f"/dev/{name}")
+        for part in glob.glob(os.path.join(glob.escape(blk), f"{glob.escape(name)}*")):
+            if os.path.isdir(part):
+                paths.add(f"/dev/{os.path.basename(part)}")
+        for dev_file in [os.path.join(blk, "dev")] + glob.glob(os.path.join(glob.escape(blk), "*", "dev")):
+            num = _read(dev_file)
+            if re.match(r"^\d+:\d+$", num):
+                numbers.add(num)
+    return numbers, paths
+
+
+def mounted_on_device(sysfs, busid, mountinfo=None):
+    """Mount points of filesystems that live on this USB device's disks/partitions.
+
+    Compared by device number AND by source path: btrfs reports an anonymous device
+    number in mountinfo, so only the source ('/dev/sdb1') identifies it.
+    """
+    numbers, paths = disk_identities(sysfs, busid)
+    if not numbers and not paths:
+        return []
+    found = []
+    try:
+        with open(mountinfo or MOUNTINFO, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        head, sep, tail = line.partition(" - ")
+        fields = head.split()
+        tail_fields = tail.split()
+        if not sep or len(fields) < 5 or len(tail_fields) < 2:
+            continue
+        if fields[2] in numbers or tail_fields[1] in paths:
+            found.append(fields[4].replace("\\040", " "))
+    return found
+
+
+def ensure_not_mounted(sysfs, busid, mountinfo=None):
+    """Root-side backstop: re-attaching a USB port under a mounted filesystem is an abrupt
+    disconnect (journal errors, btrfs emergency shutdown). The caller is supposed to have
+    unmounted already; if anything raced or failed, refuse instead of cutting the disk."""
+    mounts = mounted_on_device(sysfs, busid, mountinfo)
+    if mounts:
+        raise HelperError(
+            "refusing to re-attach: still mounted: " + ", ".join(mounts) + ". Unmount them first.",
+            EXIT_BUSY,
+        )
+
+
 def reattach(sysfs, busid, sleep=time.sleep):
     """Software unplug/replug: unbind the USB device from the generic 'usb' driver and
     bind it again, so its interfaces are probed again with the current quirks."""
@@ -250,6 +308,8 @@ def clear_state(state_dir, busid):
 
 def set_bot(sysfs, state_dir, busid, vid, pid, timeout=WAIT_TIMEOUT, sleep=time.sleep, clock=time.monotonic):
     verify_device(sysfs, busid, vid, pid)
+    if interface_driver(sysfs, busid) != USB_STORAGE:
+        ensure_not_mounted(sysfs, busid)
     state = load_state(state_dir, busid)
     entries = read_quirks(sysfs)
 
@@ -281,6 +341,9 @@ def restore(sysfs, state_dir, busid, vid, pid, timeout=WAIT_TIMEOUT, sleep=time.
         return "nothing to restore"
     if (state.get("vid"), state.get("pid")) != (vid, pid):
         raise HelperError(f"saved state for {busid} belongs to another device", EXIT_INVALID_DEVICE)
+
+    if interface_driver(sysfs, busid) != (state.get("previous_driver") or UAS):
+        ensure_not_mounted(sysfs, busid)
 
     entries = read_quirks(sysfs)
     if state.get("added"):

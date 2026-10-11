@@ -201,3 +201,69 @@ def test_set_bot_timeout_keeps_state_for_restore(helper, fake_sysfs, tmp_path):
 
     run(helper, fs, tmp_path / "run", "restore", FakeKernel(fs))
     assert fs.quirks() == "" and fs.driver() == "uas"
+
+
+# ---------------------------------------------------------------- never re-attach under a mount
+
+def _add_partition_nodes(fs, disk="sdb", part="sdb1", disk_num="8:16", part_num="8:17"):
+    scsi = os.path.join(fs.intf, "host0", "target0:0:0", "0:0:0:0")
+    bdir = os.path.join(scsi, "block", disk)
+    os.makedirs(os.path.join(bdir, part), exist_ok=True)
+    with open(os.path.join(bdir, "dev"), "w") as f:
+        f.write(disk_num + "\n")
+    with open(os.path.join(bdir, part, "dev"), "w") as f:
+        f.write(part_num + "\n")
+
+
+def test_set_bot_refuses_while_a_partition_is_mounted(helper, fake_sysfs, tmp_path, _isolated_mountinfo):
+    fs = fake_sysfs(block="sdb")
+    _add_partition_nodes(fs)
+    # btrfs shows an anonymous device number (0:45): only the source path identifies it
+    _isolated_mountinfo.write_text(
+        "36 25 0:45 / /run/media/u/USB_BTRFS rw,relatime shared:1 - btrfs /dev/sdb1 rw,space_cache=v2\n"
+        "30 25 259:2 / /home rw - btrfs /dev/mapper/root rw\n")
+    kernel = FakeKernel(fs)
+    with pytest.raises(helper.HelperError) as e:
+        run(helper, fs, tmp_path / "state", "set-bot", kernel)
+    assert e.value.code == helper.EXIT_BUSY
+    assert "/run/media/u/USB_BTRFS" in str(e.value)
+    assert kernel.reattaches == 0
+    assert fs.quirks().strip() == ""  # nothing was changed
+
+
+def test_set_bot_refuses_when_device_number_matches(helper, fake_sysfs, tmp_path, _isolated_mountinfo):
+    fs = fake_sysfs(block="sdb")
+    _add_partition_nodes(fs)
+    _isolated_mountinfo.write_text("40 25 8:17 / /mnt/data rw - ext4 /dev/disk/by-uuid/x rw\n")
+    with pytest.raises(helper.HelperError) as e:
+        run(helper, fs, tmp_path / "state", "set-bot", FakeKernel(fs))
+    assert e.value.code == helper.EXIT_BUSY
+
+
+def test_set_bot_ignores_unrelated_mounts(helper, fake_sysfs, tmp_path, _isolated_mountinfo):
+    fs = fake_sysfs(block="sdb")
+    _add_partition_nodes(fs)
+    _isolated_mountinfo.write_text(
+        "30 25 259:2 / /home rw - btrfs /dev/mapper/root rw\n"
+        "31 25 259:1 / /boot rw - vfat /dev/nvme0n1p1 rw\n"
+        "32 25 8:1 / /mnt/other rw - ext4 /dev/sda1 rw\n")
+    assert "bulk-only" in run(helper, fs, tmp_path / "state", "set-bot", FakeKernel(fs))
+
+
+def test_restore_refuses_while_a_volume_was_remounted(helper, fake_sysfs, tmp_path, _isolated_mountinfo):
+    fs = fake_sysfs(block="sdb")
+    kernel = FakeKernel(fs)
+    run(helper, fs, tmp_path / "state", "set-bot", kernel)
+    node = fs.block
+    _add_partition_nodes(fs, disk=node, part=node + "1", disk_num="8:32", part_num="8:33")
+    # the desktop auto-mounted the volume again after the switch
+    _isolated_mountinfo.write_text(f"36 25 0:45 / /run/media/u/USB rw - btrfs /dev/{node}1 rw\n")
+    reattaches = kernel.reattaches
+    with pytest.raises(helper.HelperError) as e:
+        run(helper, fs, tmp_path / "state", "restore", kernel)
+    assert e.value.code == helper.EXIT_BUSY
+    assert kernel.reattaches == reattaches
+    assert os.path.exists(helper.state_file(str(tmp_path / "state"), fs.bus_id))  # state kept for a retry
+    # once unmounted, restore works
+    _isolated_mountinfo.write_text("")
+    assert "restored" in run(helper, fs, tmp_path / "state", "restore", kernel)

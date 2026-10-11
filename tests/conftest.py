@@ -99,3 +99,18 @@ def helper():
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module
+
+
+@pytest.fixture(autouse=True)
+def _isolated_mountinfo(request, tmp_path):
+    """Never let helper tests read the host's real /proc/self/mountinfo."""
+    if "helper" not in request.fixturenames:
+        yield None
+        return
+    module = request.getfixturevalue("helper")
+    old = module.MOUNTINFO
+    path = tmp_path / "mountinfo"
+    path.write_text("")
+    module.MOUNTINFO = str(path)
+    yield path
+    module.MOUNTINFO = old

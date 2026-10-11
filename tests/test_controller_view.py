@@ -133,7 +133,8 @@ def test_clicking_the_controller_node_opens_the_view_and_reads_nothing(env):
     assert view.not_scanned_lbl.text() == ctl.NOT_SCANNED_TEXT
     assert view.disks_table.rowCount() == 5
     assert [view.disks_table.item(r, 3).text() for r in range(5)] == ["—"] * 5
-    assert not view.volumes_table.isVisibleTo(view)
+    assert view.volumes_table.rowCount() == 4                 # the 4 virtual drives, RAID state not read yet
+    assert {view.volumes_table.item(r, 2).text() for r in range(4)} == {"Not read yet"}
     assert "checked when you click" in view.tool_lbl.text()
 
 
@@ -226,7 +227,7 @@ def test_without_the_tool_smart_is_still_read(env):
     for needle in ("Vendor tool not installed", "support.dell.com", "sudo dpkg -i perccli_*.deb",
                    "SmartLinux never installs it"):
         assert needle in text
-    assert not view.volumes_table.isVisibleTo(view)
+    assert view.volumes_table.rowCount() == 4                 # no RAID report: the 4 listed virtual drives
 
 
 def test_without_permissions_smart_is_still_read(env):
@@ -303,3 +304,38 @@ def test_non_raid_disk_view_has_no_back_link(env):
     win = env.mw.MainWindow()
     win.sidebar.disk_selected.emit(win._all_known_disks["local_/dev/sda"])
     assert not win.detail_panel.back_btn.isVisibleTo(win.detail_panel)
+
+
+# ---------------------------------------------------------------- a virtual drive opens its controller
+
+def virtual_disk(win, device_path):
+    return next(d for d in win._all_known_disks.values() if d.is_virtual and d.device_path == device_path)
+
+
+def test_clicking_a_virtual_drive_opens_the_controller_view_with_its_row_selected(env):
+    win = env.mw.MainWindow()
+    win._on_disk_selected_in_sidebar(virtual_disk(win, "/dev/sdb"))
+    view = win.controller_view
+    assert win.detail_stack.currentWidget() is view
+    assert env.log == []                                       # display only, nothing is read
+    assert view.tabs.currentIndex() == 0
+    rows = view.volumes_table.selectionModel().selectedRows()
+    assert [view.volumes_table.item(r.row(), 4).text() for r in rows] == ["/dev/sdb"]
+
+
+def test_virtual_drive_row_is_found_by_volume_name_after_the_controller_scan(env):
+    win = env.mw.MainWindow()
+    view = open_controller(win)
+    win.controller_view.scan_requested.emit("", LABEL)
+    win._on_disk_selected_in_sidebar(virtual_disk(win, "/dev/sdc"))
+    rows = view.volumes_table.selectionModel().selectedRows()
+    assert [view.volumes_table.item(r.row(), 0).text() for r in rows] == ["VMDATA2"]
+    assert view.volumes_table.item(rows[0].row(), 1).text() == "RAID0"
+    assert win.detail_stack.currentWidget() is view
+
+
+def test_a_physical_disk_still_opens_its_own_view(env):
+    win = env.mw.MainWindow()
+    phys = next(d for d in win._all_known_disks.values() if not d.is_virtual and d.slot == 2)
+    win._on_disk_selected_in_sidebar(phys)
+    assert win.detail_stack.currentWidget() is win.detail_panel

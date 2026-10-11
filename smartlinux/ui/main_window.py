@@ -859,6 +859,14 @@ class MainWindow(QMainWindow):
 
     def _on_disk_selected_in_sidebar(self, disk: DiskInfo):
         current = self._all_known_disks.get(disk.host_key, disk)
+        if current.is_virtual and current.controller:
+            # A RAID volume is not a disk: it has no temperature, hours or attributes of its own.
+            # Its information (RAID level, state, cache, member disks) lives in the controller view.
+            server_id = current.server_id or ""
+            self._on_controller_selected(server_id, current.controller)
+            if self.detail_stack.currentWidget() is self.controller_view:
+                self.controller_view.highlight_volume(current.device_path)
+                return
         self.detail_stack.setCurrentWidget(self.detail_panel)
         self.detail_panel.display_disk(current)  # display only: the user starts scans
 

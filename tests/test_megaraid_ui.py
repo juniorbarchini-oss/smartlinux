@@ -127,8 +127,7 @@ def test_virtual_drive_is_never_scanned(window):
     mw, win, reads = window
     disk = win._all_known_disks["local_/dev/sda"]
     win.sidebar.disk_selected.emit(disk)
-    assert not win.detail_panel.scan_btn.isEnabled() and not win.detail_panel.self_test_btn.isEnabled()
-    assert "VIRTUAL DRIVE (RAID VOLUME)" in win.detail_panel.health_badge.text()
+    assert win.detail_stack.currentWidget() is win.controller_view      # a volume lives in its controller
     win.detail_panel.scan_requested.emit(disk)
     win.sidebar.scan_requested.emit(disk)
     assert reads == []
@@ -145,9 +144,12 @@ def test_server_panel_shows_identity_and_controllers(window):
     rows = [[panel.table.item(r, c).text() for c in range(panel.table.columnCount())]
             for r in range(panel.table.rowCount())]
     assert ["PERC H730 Mini (MegaRAID)", "RAID", "02:00.0", "megaraid_sas 07.734.00.00-rc1", "5", "4", "—"] in rows
-    # selecting a disk goes back to the diagnostics panel
-    win.sidebar.disk_selected.emit(win._all_known_disks["local_/dev/sdb"])
+    # selecting a physical disk goes to the diagnostics panel (a virtual one opens its controller)
+    physical = next(d for d in win._all_known_disks.values() if not d.is_virtual)
+    win.sidebar.disk_selected.emit(physical)
     assert win.detail_stack.currentWidget() is win.detail_panel
+    win.sidebar.disk_selected.emit(win._all_known_disks["local_/dev/sdb"])
+    assert win.detail_stack.currentWidget() is win.controller_view
 
 
 def test_hotplug_relisting_does_not_read_system_info(window, monkeypatch):

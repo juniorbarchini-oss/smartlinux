@@ -339,3 +339,44 @@ def test_a_physical_disk_still_opens_its_own_view(env):
     phys = next(d for d in win._all_known_disks.values() if not d.is_virtual and d.slot == 2)
     win._on_disk_selected_in_sidebar(phys)
     assert win.detail_stack.currentWidget() is win.detail_panel
+
+
+# ---------------------------------------------------------------- export report from the controller
+
+def test_controller_export_opens_the_export_dialog_with_only_its_physical_disks_checked(env, monkeypatch):
+    from PySide6.QtCore import Qt
+    from smartlinux.ui import export_dialog
+    seen = {}
+
+    class FakeDialog:
+        exported_files = []
+
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(env.mw, "ExportDialog", FakeDialog)
+    win = env.mw.MainWindow()
+    view = open_controller(win)
+    assert view.export_btn.isEnabled()
+    view.export_btn.click()
+    wanted = {d.uid for d in view.physical}
+    assert wanted and {d.uid for d in seen["preselected"]} == wanted
+    assert all(not d.is_virtual for d in seen["preselected"])
+    # the real dialog checks exactly those rows
+    dialog = export_dialog.ExportDialog(available_disks=seen["available_disks"], parent=win,
+                                        preselected=seen["preselected"])
+    checked = {dialog.disk_list_widget.item(i).data(Qt.UserRole).uid for i in range(dialog.disk_list_widget.count())
+               if dialog.disk_list_widget.item(i).checkState() == Qt.Checked}
+    assert checked == wanted
+
+
+def test_controller_export_is_disabled_while_a_scan_runs(env):
+    win = env.mw.MainWindow()
+    view = open_controller(win)
+    view.set_busy(True)
+    assert not view.export_btn.isEnabled()
+    view.set_busy(False)
+    assert view.export_btn.isEnabled()

@@ -222,6 +222,7 @@ class MainWindow(QMainWindow):
         self.controller_view.setObjectName("DetailContainer")
         self.controller_view.scan_requested.connect(self._on_scan_controller)
         self.controller_view.cancel_requested.connect(self._cancel_serial_scan)
+        self.controller_view.export_requested.connect(self._export_controller_disks)
         self.controller_view.disk_scan_requested.connect(self._on_scan_one_disk)
         self.controller_view.disk_open_requested.connect(self._open_disk_from_controller)
         self.detail_stack.addWidget(self.controller_view)
@@ -1096,7 +1097,10 @@ class MainWindow(QMainWindow):
 
     # ---------------- MULTI-FORMAT EXPORT REPORT DIALOG ----------------
 
-    def _open_export_dialog(self, disk: Optional[DiskInfo] = None):
+    def _export_controller_disks(self, disks):
+        self._open_export_dialog(preselected=disks)
+
+    def _open_export_dialog(self, disk: Optional[DiskInfo] = None, preselected=None):
         available_disks = list(self._all_known_disks.values())
         if not available_disks:
             if self.detail_panel.current_disk:
@@ -1109,7 +1113,8 @@ class MainWindow(QMainWindow):
         dialog = ExportDialog(
             available_disks=available_disks,
             selected_disk=disk or self.detail_panel.current_disk,
-            parent=self
+            parent=self,
+            preselected=preselected,
         )
         if dialog.exec():
             exported = dialog.exported_files

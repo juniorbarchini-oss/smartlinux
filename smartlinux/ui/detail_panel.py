@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from ..core.models import DiskInfo, HealthStatus
 from ..core.raid import VIRTUAL_SUMMARY
+from ..core.controller import is_controller_disk
 from .history_tab import HistoryTab
 from .scan_state import SCAN_NOW_TEXT, scan_action_text, format_last_scanned
 
@@ -62,6 +63,7 @@ class DetailPanel(QWidget):
     eject_requested = Signal(str)           # Emits device_path for local USB drive
     self_test_requested = Signal(object, str)  # Emits (DiskInfo, test_type: "short"|"long")
     compat_mode_requested = Signal(object)  # Emits DiskInfo whose USB adapter hides SMART (UAS)
+    back_to_controller_requested = Signal(object)  # Emits DiskInfo: open its RAID controller view
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -86,6 +88,17 @@ class DetailPanel(QWidget):
         main_layout = QVBoxLayout(diagnostics_widget)
         main_layout.setContentsMargins(14, 14, 14, 14)
         main_layout.setSpacing(14)
+
+        # "← Back to controller" (only for disks that belong to a RAID controller)
+        self.back_btn = QPushButton("← Back to controller")
+        self.back_btn.setFlat(True)
+        self.back_btn.setCursor(Qt.PointingHandCursor)
+        self.back_btn.setVisible(False)
+        self.back_btn.clicked.connect(self._on_back_clicked)
+        back_row = QHBoxLayout()
+        back_row.addWidget(self.back_btn)
+        back_row.addStretch()
+        main_layout.addLayout(back_row)
 
         # 1. Header Card (Model, S/N, Health Status Badge)
         self.header_card = QFrame()
@@ -262,6 +275,9 @@ class DetailPanel(QWidget):
 
     def display_disk(self, disk: DiskInfo):
         self.current_disk = disk
+        self.back_btn.setVisible(is_controller_disk(disk))
+        if disk.controller:
+            self.back_btn.setToolTip(disk.controller)
         self.scan_btn.setEnabled(not self._compat_busy)
         self.export_btn.setEnabled(True)
         self.self_test_btn.setEnabled(not self._compat_busy)
@@ -550,6 +566,10 @@ class DetailPanel(QWidget):
         else:
             self.scan_btn.setText(scan_action_text(self.current_disk))
             self.status_msg_lbl.setText(message)
+
+    def _on_back_clicked(self):
+        if self.current_disk:
+            self.back_to_controller_requested.emit(self.current_disk)
 
     def _on_scan_clicked(self):
         if self.current_disk:

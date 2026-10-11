@@ -263,43 +263,55 @@ Behind a hardware RAID controller (LSI/Broadcom **MegaRAID**, Dell **PERC**) the
 **virtual drives** (`/dev/sda`, model e.g. "PERC H730 Mini"): they have no SMART of their own. The physical
 disks are only reachable as `smartctl -d megaraid,N /dev/bus/H`, which `smartctl --scan` lists.
 
-- SmartLinux keeps the `-d` type of every scan entry, so the physical disks that share `/dev/bus/0` are
-  listed (and remembered) one by one, grouped under their controller in the sidebar
-  ("PERC H730 Mini (MegaRAID) — 5 physical, 4 virtual"). Virtual drives go in their own group, with their
-  size, and are never sent to smartctl.
-- A scan reads `smartctl -j -a -d megaraid,N /dev/bus/H` (then `-d sat+megaraid,N` for SATA disks).
-  SAS disks show health status, temperature, power-on time, start/stop cycles, **grown defect list**,
-  corrected/uncorrected read/write/verify errors, non-medium errors and the self-test log. Health: a
-  status other than OK is **FAILED**; grown defects or uncorrected errors are a **WARNING** (with the
-  count); corrected and non-medium errors alone are normal on SAS.
-- Selecting **Local Drives** or a server shows the **Server** panel: model, service tag (needs root),
-  CPU, RAM, OS / Proxmox VE version, kernel, uptime and a **Storage controllers** table (driver and
-  version, physical and virtual disks per controller; firmware only if the system reports it). It is read
-  from `/sys`, `/proc`, `lscpu`, `lspci`, `modinfo`, `pveversion` and `dmidecode` when you connect or
-  refresh a host (locally: at startup and on Refresh, not on hotplug), and every value is optional.
+**The controller is a node of its own** in the sidebar: "🟡 PERC H730 Mini (MegaRAID) — 5 physical,
+4 virtual", with its physical disks under it and the virtual drives in a separate group. The dot is the
+worst of its disks and volumes (🟢 OK, 🟡 attention, 🔴 failure, ⚪ not scanned yet). Clicking the node
+opens the **controller view** (nothing is read just by selecting it):
 
-Read-only: SmartLinux never runs `storcli`/`perccli`/`MegaCli` and never changes the RAID configuration.
-Empty slots are not listed (smartctl does not report them).
+- a header with the model, driver, firmware and battery, the overall status and the vendor tool status
+  ("perccli64 007.1910 ✓", or what it adds and how to install it by hand when it is missing);
+- **↻ Scan controller**: reads everything in one go, **in series** (never in parallel, so neither the
+  controller nor the SSH connection is flooded), with "Disk 3 of 5" progress and **Cancel**. First the
+  RAID state with the vendor tool (once, if it is installed and permitted; without it, or without
+  permission, a clear message and the disks are still read), then `smartctl` for every physical disk
+  through the same per-disk read as a single scan, so the last-scanned time, history and cache are
+  updated the same way. A disk that fails is marked with its error and the others are still read;
+- a **Volumes** table (vendor tool data): name, RAID level, state, size, OS device and member disks;
+  a RAID0 of one disk is marked "single-drive volume" (informational: it can be deliberate);
+- one **Physical disks** table joining both sources per disk: slot/DID, model, SMART health,
+  temperature, power-on hours, defects (grown defects / reallocated sectors), state on the controller
+  and volume. Double-click a row to open the full disk view (which offers "← Back to controller"); each
+  row's **↻** reads only that disk. Before the first scan the rows show "—" and a banner says so.
+
+SMART of the physical disks: `smartctl -j -a -d megaraid,N /dev/bus/H` (then `-d sat+megaraid,N` for SATA
+disks). SAS disks show health status, temperature, power-on time, start/stop cycles, **grown defect
+list**, corrected/uncorrected read/write/verify errors, non-medium errors and the self-test log. Health: a
+status other than OK is **FAILED**; grown defects or uncorrected errors are a **WARNING** (with the
+count); corrected and non-medium errors alone are normal on SAS. Empty slots are not listed.
+
+The **Server** panel (select **Local Drives** or a server) shows the machine's identity (model, service
+tag with root, CPU, RAM, OS / Proxmox VE, kernel, uptime), its storage controllers, a short **RAID
+controllers** table (status and disk counts; double-click opens the controller), **Export diagnostic
+bundle…** and **↻ Scan all disks**, which reads every physical disk of the machine in series (also on
+machines without a RAID controller). While a RAID controller has not been scanned yet, the panel says:
+"This server has a RAID controller. Open it and click Scan controller…". Scans are always started by
+you: nothing is read on a timer, on hotplug or just by selecting something.
 
 ---
 
 ## 🧰 Vendor tool (RAID)
 
 `smartctl` reads each physical disk behind a MegaRAID/PERC controller, but not the RAID itself. When
-Dell **perccli** or Broadcom **storcli** is **already installed**, each MegaRAID controller in the
-**Server** panel offers a read mode: **Standard read** (smartctl only, the default) or **Vendor tool**.
-The choice is saved per server and controller in `~/.config/smartlinux/settings.json` (0600).
+Dell **perccli** or Broadcom **storcli** is **already installed**, **Scan controller** uses it
+automatically (there is no setting to choose; the old `vendor_tool_modes` setting is ignored) to add:
 
-In Vendor tool mode SmartLinux also shows:
-
-- the controller (product, FW version and package, BIOS, driver, personality, controller status);
-- every volume: DG/VD, RAID type, state (Optl / Dgrd / Pdgd / OfLn), cache, size, name, the physical
-  disks it is built from, the `/dev/sdX` it appears as and active operations (rebuild, init, CC);
-  single-disk RAID0 volumes are marked "no redundancy";
-- every physical disk: state, media / other error counts, predictive failure count, SMART alert,
-  temperature and link speed. DID = the N of `smartctl -d megaraid,N`; double-click a row to open the
-  disk. The sidebar shows the volume on each disk ("sdb · VMDATA1 · RAID0 · 1 disk · no redundancy");
-- the battery (BBU): state, charge, temperature, replacement required, pack missing.
+- the controller: product, FW version, BIOS, driver, personality, controller status and battery (BBU:
+  state, charge, temperature, replacement required, pack missing);
+- every volume: RAID level, state (Optl / Dgrd / Pdgd / OfLn), size, the `/dev/sdX` it appears as, the
+  physical disks it is built from and active operations (rebuild, init, CC). The sidebar shows the
+  volume on each disk ("sdb · VMDATA1 · RAID0 · 1 disk · no redundancy");
+- every physical disk: state on the controller, media / other error counts, predictive failure count,
+  SMART alert. DID = the N of `smartctl -d megaraid,N`, so each row matches its sidebar disk.
 
 Health: a volume Dgrd/Pdgd is a WARNING (redundancy lost), OfLn is FAILED; a disk Failed/Offln/UBad is
 FAILED, a predictive failure or a SMART alert is a WARNING, media errors are ATTENTION (other errors are
@@ -312,15 +324,15 @@ Policy:
   `^[0-9]{1,2}$` and no shell (over SSH the validated tokens cannot contain shell syntax):
   `-v`, `show ctrlcount J`, `/cN show J`, `/cN show all J`, `/cN/vall show all J`,
   `/cN/eall/sall show all J`, `/cN/bbu show all J`, `/cN/dall show J`. Anything else (set, start, stop,
-  add, del, import, clear, flash, secure, foreign, patrolread...) is refused before it runs.
+  add, del, import, clear, flash, secure, foreign, patrolread...) is refused before it runs. SmartLinux
+  never changes the RAID configuration.
 - **Fixed executables:** `perccli64`, `perccli`, `storcli64`, `storcli`,
   `/opt/MegaRAID/perccli/perccli64`, `/opt/MegaRAID/storcli/storcli64`.
-- **SmartLinux never installs it**, locally or over SSH. If it is missing, the panel says what it adds
-  and where to get it (Dell: PERCCLI in Drivers & Downloads, category SAS RAID; Broadcom: StorCLI) and
-  how to install it by hand (`sudo dpkg -i perccli_*.deb` / `sudo rpm -ivh perccli-*.rpm`).
-- **Manual only:** it runs when you connect / refresh a server or click Refresh for this computer,
-  never at startup, on hotplug or on a timer. It needs root (or sudo for a remote user with a saved
-  password); otherwise the panel explains why it is not available.
+- **SmartLinux never installs it**, locally or over SSH. If it is missing, the controller view says what
+  it adds and where to get it (Dell: PERCCLI in Drivers & Downloads, category SAS RAID; Broadcom:
+  StorCLI) and how to install it by hand (`sudo dpkg -i perccli_*.deb` / `sudo rpm -ivh perccli-*.rpm`).
+- **Manual only:** it runs only when you click **Scan controller**. It needs root (or sudo for a remote
+  user with a saved password); otherwise the view explains why and the disks are read with smartctl.
 
 ---
 
@@ -384,6 +396,7 @@ smartlinux/
 │   │   ├── raid.py             # RAID controllers: -d megaraid,N disks, virtual drive detection
 │   │   ├── system_info.py      # Read-only host identity and storage controllers (local / SSH)
 │   │   ├── vendor_tools.py     # Optional perccli/storcli reads: whitelist, detection, RAID health
+│   │   ├── controller.py       # RAID controller as a unit: its disks and aggregate status
 │   │   ├── diagnostics.py      # Diagnostic bundle: fixed read-only commands, manifest, zip
 │   │   ├── sanitizer.py        # Consistent fake values for personal data + residue check
 │   │   ├── ssh_client.py       # Hardened paramiko client + automatic engine selection (AutoSSHClient)
@@ -399,7 +412,9 @@ smartlinux/
 │   │   ├── main_window.py      # Main window & background worker orchestration
 │   │   ├── sidebar.py          # Device tree with health badges and context menus
 │   │   ├── detail_panel.py     # Telemetry metric cards, self-test actions and attribute table
-│   │   ├── server_panel.py     # Server identity card and storage controller table
+│   │   ├── server_panel.py     # Server identity card, storage / RAID controllers, Scan all disks
+│   │   ├── controller_view.py  # RAID controller view: Scan controller, volumes, unified disk table
+│   │   ├── serial_scan.py      # One-at-a-time scan worker (progress, cancel)
 │   │   ├── diagnostic_dialog.py # Export diagnostic bundle: command list, sanitized preview, Save as
 │   │   ├── history_tab.py      # Historical SMART attribute delta and degradation viewer
 │   │   ├── server_dialog.py    # Remote SSH server configuration & host key approval modal
@@ -419,7 +434,8 @@ smartlinux/
 │   ├── test_legacy_ssh_engine.py   # plink engine and paramiko→plink automatic selection
 │   ├── test_usb_compat*.py         # USB compatibility mode on a fake sysfs (detection, guards, flow, UI)
 │   ├── test_megaraid*.py           # Dell R630 / PERC H730 captures: discovery, SAS health, server info, UI
-│   ├── test_vendor_tools*.py       # perccli captures: whitelist, detection, RAID health, Vendor tool UI
+│   ├── test_vendor_tools.py        # perccli captures: whitelist, detection, RAID health
+│   ├── test_controller_view.py     # Controller node / view, Scan controller, Scan all disks
 │   ├── test_sanitizer.py           # Synthetic personal values: replaced, consistent, residue check
 │   ├── test_diagnostic*.py         # Bundle whitelist, R630 replay, zip / manifest, size cap, dialog
 │   └── test_usb_mode_helper.py     # Root helper: argument checks, quirks editing, idempotence

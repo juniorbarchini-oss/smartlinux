@@ -119,7 +119,8 @@ def _defects(disk: DiskInfo) -> int:
 
 def status_sentence(physical: List[DiskInfo], virtual: List[DiskInfo], report=None) -> str:
     """Plain-language summary of the EXCEPTIONS only ("2 disks have reallocated sectors; 1 volume
-    has no redundancy."). One short line when everything is fine."""
+    has lost redundancy."). One short line when everything is fine. Single-drive volumes are NOT
+    an exception here (they are often deliberate): see redundancy_note()."""
     if not has_scan_data(physical, report):
         return NOT_SCANNED_TEXT
     parts: List[str] = []
@@ -151,13 +152,10 @@ def status_sentence(physical: List[DiskInfo], virtual: List[DiskInfo], report=No
             parts.append(_count(len(media), "disk has media errors", "disks have media errors"))
         degraded = [v for v in report.volumes if v.state in ("Dgrd", "Pdgd")]
         offline = [v for v in report.volumes if v.state.startswith("OfLn")]
-        single = [v for v in report.volumes if single_drive_volume(v)]
         if offline:
             parts.append(_count(len(offline), "volume is offline", "volumes are offline"))
         if degraded:
             parts.append(_count(len(degraded), "volume has lost redundancy", "volumes have lost redundancy"))
-        if single:
-            parts.append(_count(len(single), "volume has no redundancy", "volumes have no redundancy"))
         if report.battery.present and report.battery.level > 0:
             parts.append("the battery needs attention")
         if report.status and report.status.strip().lower() != "optimal":
@@ -168,3 +166,15 @@ def status_sentence(physical: List[DiskInfo], virtual: List[DiskInfo], report=No
         return ALL_GOOD
     text = "; ".join(parts) + "."
     return text[0].upper() + text[1:]
+
+
+def redundancy_note(report=None) -> str:
+    """Neutral, informational line about single-drive volumes (RAID0 of one disk). Never part of
+    the problem sentence: in labs and Harvester/Ceph nodes it is a deliberate design."""
+    if report is None:
+        return ""
+    single = [v for v in report.volumes if single_drive_volume(v)]
+    if not single:
+        return ""
+    return _count(len(single), "volume is a single drive (RAID0, no controller redundancy).",
+                  "volumes are single drives (RAID0, no controller redundancy).")

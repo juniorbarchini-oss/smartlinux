@@ -16,7 +16,7 @@ if ! command -v dpkg-deb >/dev/null 2>&1; then
         && chown -R "$HOST_UID:$HOST_GID" /src/dist' _ "$@"
 fi
 
-VERSION="${1:-$(git -C "$ROOT" describe --tags --abbrev=0 --match 'v*' 2>/dev/null | sed 's/^v//')}"
+VERSION="${1:-$(git -C "$ROOT" describe --tags --abbrev=0 --match 'v*' 2>/dev/null | sed 's/^v//; s/-/~/')}"
 [ -n "$VERSION" ] || { echo "no version given and no v* tag found" >&2; exit 1; }
 
 STAGE="$(mktemp -d)"

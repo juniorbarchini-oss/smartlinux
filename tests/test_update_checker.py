@@ -241,8 +241,24 @@ def test_settings_non_dict_json_treated_as_empty(settings_dir):
 # --- version consistency guard ---------------------------------------------
 
 def test_package_version_matches_pkgbuild():
+    """__version__ is the git tag version; Arch's pkgver is the same without hyphens
+    (pkgver may not contain them), derived from `_tag` in the PKGBUILD."""
     pkgbuild = os.path.join(os.path.dirname(__file__), "..", "packaging", "arch", "PKGBUILD")
     with open(pkgbuild, encoding="utf-8") as f:
-        match = re.search(r"^pkgver=(.+)$", f.read(), re.MULTILINE)
-    assert match, "pkgver not found in PKGBUILD"
-    assert smartlinux.__version__ == match.group(1).strip().strip("\"'")
+        text = f.read()
+    tag = re.search(r"^_tag=([^#\s]+)", text, re.MULTILINE)
+    assert tag, "_tag not found in PKGBUILD"
+    assert smartlinux.__version__ == tag.group(1).strip().strip("\"'")
+    assert re.search(r"^pkgver=\$\{_tag//-/\}$", text, re.MULTILINE), "pkgver must derive from _tag"
+
+
+def test_pre_releases_sort_before_the_final_release():
+    assert uc.is_newer("1.3.0", "1.3.0-beta.1")
+    assert uc.is_newer("v1.3.0", "1.3.0b1")
+    assert not uc.is_newer("1.3.0-beta.1", "1.3.0")
+    assert uc.is_newer("1.3.0-beta.2", "1.3.0-beta.1")
+    assert uc.is_newer("1.3.0-rc.1", "1.3.0-beta.9")
+    assert uc.is_newer("1.3.0-beta.1", "1.2.9")
+    assert not uc.is_newer("1.3.0-beta.1", "1.3.0-beta.1")
+    assert uc.is_newer("1.3.1", "1.3.0-rc.2")
+    assert not uc.is_newer("garbage", "1.3.0-beta.1")

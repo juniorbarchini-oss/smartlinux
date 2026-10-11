@@ -39,12 +39,33 @@ def parse_version(text: Optional[str]) -> Optional[Tuple[int, ...]]:
     return tuple(int(part) for part in match.group(1).split("."))
 
 
+_PRE_RE = re.compile(
+    r"^\s*v?(\d+(?:\.\d+)*)(?:[-.~_]?(alpha|a|beta|b|rc|c|preview|pre)[-.~_]?(\d+)?)?\s*$", re.I
+)
+# alpha < beta < rc < final release
+_STAGES = {"alpha": -3, "a": -3, "beta": -2, "b": -2, "pre": -1, "preview": -1, "rc": -1, "c": -1}
+
+
+def version_key(text: Optional[str]) -> Optional[Tuple[Tuple[int, ...], int, int]]:
+    """Sortable key: (release numbers, stage, serial). A final release has stage 0, so
+    1.3.0 > 1.3.0-rc.1 > 1.3.0-beta.2 > 1.3.0-beta.1 > 1.2.9."""
+    match = _PRE_RE.match(text or "")
+    if match:
+        release = tuple(int(part) for part in match.group(1).split("."))
+        if match.group(2):
+            return release, _STAGES[match.group(2).lower()], int(match.group(3) or 0)
+        return release, 0, 0
+    plain = parse_version(text)          # tolerate trailing text we do not understand
+    return (plain, 0, 0) if plain else None
+
+
 def is_newer(latest: Optional[str], current: Optional[str]) -> bool:
-    a, b = parse_version(latest), parse_version(current)
+    a, b = version_key(latest), version_key(current)
     if a is None or b is None:
         return False
-    size = max(len(a), len(b))
-    return a + (0,) * (size - len(a)) > b + (0,) * (size - len(b))
+    size = max(len(a[0]), len(b[0]))
+    pad = lambda release: release + (0,) * (size - len(release))
+    return (pad(a[0]), a[1], a[2]) > (pad(b[0]), b[1], b[2])
 
 
 def should_auto_check(setting: str, last_check: float, now: float) -> bool:

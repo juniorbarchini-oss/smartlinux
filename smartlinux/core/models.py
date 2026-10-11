@@ -77,6 +77,10 @@ class DiskInfo:
     raw_json: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
     self_test_status: Optional[str] = None
+    # USB adapter hiding SMART in UAS mode (usb_compat.UasCandidate), set after a local scan
+    uas_candidate: Optional[Any] = None
+    # "Read in compatibility mode on ..." when this reading came from Bulk-Only mode
+    compat_read_note: Optional[str] = None
 
     @property
     def display_title(self) -> str:

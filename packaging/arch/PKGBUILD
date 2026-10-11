@@ -1,0 +1,54 @@
+# Maintainer: juniorbarchini-oss <juniorbarchini-oss@users.noreply.github.com>
+pkgname=smartlinux
+pkgver=1.1.0
+pkgrel=1
+pkgdesc="S.M.A.R.T. disk health diagnostics for local and remote (SSH) drives"
+arch=('any')
+url="https://github.com/juniorbarchini-oss/smartlinux"
+license=('MIT')
+depends=('python' 'pyside6' 'python-paramiko' 'python-keyring' 'smartmontools')
+optdepends=('putty: SSH to very old devices that only offer ssh-dss host keys')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('96c59795fa708c5ce408dd9e387da6fc9b6f1e9e0d23d2a365d6d8d629a7e57c')
+
+package() {
+  cd "$pkgname-$pkgver"
+
+  # Application code
+  install -d "$pkgdir/usr/lib/$pkgname"
+  cp -r smartlinux "$pkgdir/usr/lib/$pkgname/"
+  find "$pkgdir/usr/lib/$pkgname" -name '__pycache__' -type d -prune -exec rm -rf {} +
+
+  # Launcher
+  install -d "$pkgdir/usr/bin"
+  cat > "$pkgdir/usr/bin/$pkgname" <<'LAUNCHER'
+#!/bin/sh
+PYTHONPATH=/usr/lib/smartlinux${PYTHONPATH:+:$PYTHONPATH} exec python3 -m smartlinux.main "$@"
+LAUNCHER
+  chmod 755 "$pkgdir/usr/bin/$pkgname"
+
+  # Desktop entry (Exec points at the installed launcher, not the source tree)
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/$pkgname.desktop" <<'DESKTOP'
+[Desktop Entry]
+Name=SmartLinux
+GenericName=Disk Diagnostic Tool
+Comment=S.M.A.R.T. Disk Health Diagnostics & Monitoring
+Exec=smartlinux
+Icon=smartlinux
+Terminal=false
+Type=Application
+Categories=System;HardwareSettings;Utility;
+Keywords=smart;disk;ssd;hdd;nvme;health;telemetry;diagnostic;storage;
+StartupWMClass=smartlinux
+DESKTOP
+
+  # Icons
+  for s in 32 48 64 128 256 512; do
+    install -Dm644 "smartlinux/assets/icon_${s}x${s}.png" \
+      "$pkgdir/usr/share/icons/hicolor/${s}x${s}/apps/$pkgname.png"
+  done
+  install -Dm644 smartlinux/assets/icon.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/$pkgname.svg"
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

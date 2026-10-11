@@ -42,6 +42,12 @@ PROTECTED_MOUNTS = ("/", "/boot", "/home")
 STACKED_TYPES = ("crypt", "lvm", "dm", "mpath")
 STACKED_FSTYPES = ("crypto_LUKS", "LVM2_member", "linux_raid_member")
 
+# Slow adapters: observed live, an ext4 unmount on a UAS bridge blocked ~30 s on its final
+# journal write until the kernel reset the port. A short timeout aborted the whole flow.
+UNMOUNT_TIMEOUT = 120.0
+MOUNT_TIMEOUT = 60.0
+NODE_TIMEOUT = 90.0
+
 # pkexec: 126 = authentication dialog dismissed, 127 = not authorized / auth failed.
 # In both cases the helper never ran, so there is nothing to restore.
 PKEXEC_NOT_AUTHORIZED = (126, 127)
@@ -389,7 +395,7 @@ def run_compat_read(candidate: UasCandidate,
                     sleep: Callable[[float], None] = time.sleep,
                     clock: Callable[[], float] = time.monotonic,
                     now: Callable[[], datetime] = datetime.now,
-                    node_timeout: float = 30.0,
+                    node_timeout: float = NODE_TIMEOUT,
                     remount_timeout: float = 20.0,
                     automount_grace: float = 3.0) -> CompatReadResult:
     """unmount -> set-bot -> find new node -> read SMART -> restore (always) -> remount."""
@@ -405,8 +411,8 @@ def run_compat_read(candidate: UasCandidate,
     for v in volumes:
         if not v.is_mounted:
             continue
-        progress(f"Unmounting {v.describe()}...")
-        res = runner(["udisksctl", "unmount", "-b", v.path], 30)
+        progress(f"Unmounting {v.describe()} (slow drives can take up to 2 minutes)...")
+        res = runner(["udisksctl", "unmount", "-b", v.path], UNMOUNT_TIMEOUT)
         if res.returncode != 0:
             warnings = _remount(unmounted, runner, sleep, clock, 0, 0)
             msg = f"Could not unmount {v.path}: {(res.stderr or res.stdout).strip()}"
@@ -496,7 +502,7 @@ def _unmount_all(device_path: str, runner: Runner, progress) -> List[str]:
     for v in volumes:
         if v.is_mounted:
             progress(f"Unmounting {v.describe()} (mounted automatically)...")
-            res = runner(["udisksctl", "unmount", "-b", v.path], 30)
+            res = runner(["udisksctl", "unmount", "-b", v.path], UNMOUNT_TIMEOUT)
             if res.returncode != 0:
                 warnings.append(f"Could not unmount {v.path} before restoring normal mode: "
                                 f"{(res.stderr or res.stdout).strip()}")
@@ -538,7 +544,7 @@ def _remount(volumes: List[Volume], runner: Runner, sleep, clock,
                 continue
             if clock() - start < grace:
                 continue  # give the desktop's automounter the first chance
-            res = runner(["udisksctl", "mount", "-b", f"/dev/disk/by-uuid/{v.uuid}"], 30)
+            res = runner(["udisksctl", "mount", "-b", f"/dev/disk/by-uuid/{v.uuid}"], MOUNT_TIMEOUT)
             if res.returncode == 0:
                 pending.remove(v)
             else:

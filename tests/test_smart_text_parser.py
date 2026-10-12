@@ -271,3 +271,20 @@ def test_proc_partitions_multiple_and_nvme():
 def test_proc_partitions_garbage():
     assert parse_proc_partitions("") == []
     assert parse_proc_partitions("cat: can't open '/proc/partitions'") == []
+
+
+# ---- attributes smartctl cannot name (generic SSD, not in its database) -----------------------
+
+def test_unnamed_attributes_are_shown_as_vendor_specific_with_their_id():
+    import os
+    path = os.path.join(os.path.dirname(__file__), "fixtures", "generic_ssd_vendor_attributes", "smartctl_a.txt")
+    disk = parse_smart_text(open(path).read(), "/dev/sda")
+    by_id = {a.id: a for a in disk.attributes}
+    assert len(disk.attributes) == 12                       # nothing is dropped
+    for attr_id in (160, 161, 164, 245):
+        attr = by_id[attr_id]
+        assert attr.name == f"Vendor-specific (ID {attr_id})"
+        assert "does not document" in attr.description      # the tooltip says why it has no name
+    assert by_id[5].name == "Reallocated_Sector_Ct"         # named attributes keep smartctl's name
+    assert by_id[164].raw == "179802"                       # the reading itself is untouched
+    assert len({a.name for a in disk.attributes}) == 12     # unique names (history keys by name)

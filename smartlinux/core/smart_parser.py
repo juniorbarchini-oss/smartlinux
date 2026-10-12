@@ -101,6 +101,18 @@ def detect_raw_vendor(data: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+VENDOR_SPECIFIC_NOTE = (
+    "The manufacturer does not document this attribute, so smartctl cannot name it. "
+    "It cannot be judged on its own: only a change from its own previous value means something."
+)
+
+
+def is_unnamed_attribute(name) -> bool:
+    """smartctl's placeholder for an ID that is not in its drive database."""
+    return str(name or "").strip().lower() in ("", "unknown_attribute", "unknown attribute") or \
+        bool(re.fullmatch(r"attr_\d+", str(name).strip().lower()))
+
+
 class SmartParser:
     """Parses JSON output from smartctl (-j -a)."""
 
@@ -290,6 +302,9 @@ class SmartParser:
         for item in attr_table:
             attr_id = int(item.get("id", 0))
             name = item.get("name", f"Attr_{attr_id}")
+            vendor_specific = is_unnamed_attribute(name)
+            if vendor_specific:
+                name = f"Vendor-specific (ID {attr_id})"
             val = item.get("value", 0)
             worst = item.get("worst", 0)
             thresh = item.get("thresh", 0)
@@ -321,6 +336,8 @@ class SmartParser:
                 has_warning = True
 
             desc = cls.CRITICAL_ATA_ATTRS.get(attr_id, "")
+            if vendor_specific:
+                desc = VENDOR_SPECIFIC_NOTE
 
             if attr_id in (194, 190) and disk.temperature_c is None:
                 try:
